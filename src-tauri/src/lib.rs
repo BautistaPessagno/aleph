@@ -8,9 +8,10 @@ use std::{fs, sync::Arc};
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::*;
-use tantivy::{directory::MmapDirectory, doc, Index, IndexWriter, ReloadPolicy};
-//Walkdir
-use jwalk::{DirEntry, Parallelism, WalkDir};
+use tantivy::TantivyError;
+use tantivy::{doc, Index, IndexWriter};
+//WalkDir
+use jwalk::{Parallelism, WalkDir};
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -18,8 +19,8 @@ fn greet(name: &str) -> String {
 }
 
 fn create_index() -> tantivy::Result<()> {
-    //el index se va a guardar en ~/.cache/aleph/index
-    //si no existe el path se crea
+    //El index se va a guardar en ~/.cache/aleph/index
+    //Si no existe el path se crea
     let idx_path = Path::new("~/.cache/aleph/index");
 
     if !idx_path.exists() {
@@ -37,20 +38,20 @@ fn create_index() -> tantivy::Result<()> {
     let index = Index::create_in_dir(&idx_path, schema.clone())?;
 
     let mut index_writer: IndexWriter = index.writer_with_num_threads(4, 50_000_000)?;
-    // let writer = Arc::new(index.writer(50_000_000)?);
+    //B: let writer = Arc::new(index.writer(50_000_000)?);
 
     let path_f = schema.get_field("path").unwrap();
     let filename = schema.get_field("filename").unwrap();
     let ext_f = schema.get_field("extension").unwrap();
 
-    //vamos a indexar todo
+    //Vamos a indexar todo
     let root_dir = Path::new("~/Desktop/");
 
-    let walk_dir = WalkDir::new(root_dir)
+    WalkDir::new(root_dir)
         .skip_hidden(true)
         .follow_links(true)
         .parallelism(Parallelism::RayonNewPool(8))
-        .process_read_dir(|depth, path, parent, children| {
+        .process_read_dir(|_depth, _path, _parent, children| {
             children.retain(|entry_result| {
                 entry_result
                     .as_ref()
@@ -86,6 +87,46 @@ fn create_index() -> tantivy::Result<()> {
     Ok(())
 }
 
+fn search_index(path: &Path, query: &str) -> Result<Vec<(String, String)>, TantivyError> {
+    let index = Index::open_in_dir(path)?;
+
+    let reader = index.reader()?;
+
+    let schema = index.schema();
+
+    let path_f = schema.get_field("path").unwrap();
+    let filename = schema.get_field("filename").unwrap();
+    let ext_f = schema.get_field("extension").unwrap();
+
+    let searcher = reader.searcher();
+
+    let mut query_parser = QueryParser::for_index(&index, vec![path_f, filename, ext_f]);
+    query_parser.set_field_fuzzy(filename, false, 2, true);
+
+    let query = query_parser.parse_query(query)?;
+
+    let top_docs = searcher.search(&query, &TopDocs::with_limit(10))?;
+
+    let mut top_docs_vec: Vec<(String, String)> = Vec::with_capacity(top_docs.len());
+
+    for (_score, doc_address) in top_docs {
+        let retrieved_doc: TantivyDocument = searcher.doc(doc_address)?;
+        let name = retrieved_doc
+            .get_first(filename)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_owned();
+
+        let path = retrieved_doc
+            .get_first(path_f)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_owned();
+
+        top_docs_vec.push((name, path));
+    }
+    Ok(top_docs_vec)
+}
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
