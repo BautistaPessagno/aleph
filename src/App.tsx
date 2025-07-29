@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { openPath } from "@tauri-apps/plugin-opener";
 import "./App.css";
 
 interface SearchResult {
@@ -129,7 +128,7 @@ function App() {
   // Función para abrir archivo/aplicación
   const openItem = async (item: SearchResult) => {
     try {
-      await openPath(item.path);
+      await invoke("open_path", { path: item.path });
       // Limpiar búsqueda después de abrir
       setQuery("");
       setResults([]);

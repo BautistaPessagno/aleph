@@ -3,6 +3,7 @@
 //manejo de paths y archivos
 use jwalk::rayon::iter::{ParallelBridge, ParallelIterator};
 use std::fs::create_dir_all;
+use std::iter::Skip;
 use std::path::Path;
 use std::{fs, path::PathBuf};
 //tantivy
@@ -13,6 +14,8 @@ use tantivy::{doc, Index, IndexWriter};
 use tantivy::{ReloadPolicy, TantivyError};
 //WalkDir
 use jwalk::{Parallelism, WalkDir};
+//opener
+use opener::{self, open, OpenError};
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -39,7 +42,7 @@ fn create_index() -> Result<(), String> {
     let schema = schema_builder.build();
 
     //  Abrir o crear el índice de forma segura
-    let index = match Index::create_in_dir(idx_path, schema.clone()) {
+    let index: Index = match Index::create_in_dir(idx_path, schema.clone()) {
         Ok(idx) => idx, // creado de cero
         Err(TantivyError::IndexAlreadyExists) => {
             fs::remove_file(idx_path.join("meta.json")).map_err(|e| e.to_string())?;
@@ -68,20 +71,23 @@ fn create_index() -> Result<(), String> {
         .par_bridge()
         .for_each(|res| {
             if let Ok(entry) = res {
-                let path = entry.path().display().to_string();
-                let name = entry.file_name().to_string_lossy();
-                let ext = entry
-                    .path()
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-                let doc = doc!(
-                    path_f => path,
-                    filename => name.as_ref(),
-                    ext_f => ext.as_str(),
-                );
-                index_writer.add_document(doc);
+                //filtro si no es un directorio
+                if entry.file_type().is_file() {
+                    let path = entry.path().display().to_string();
+                    let name = entry.file_name().to_string_lossy();
+                    let ext = entry
+                        .path()
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    let doc = doc!(
+                        path_f => path,
+                        filename => name.as_ref(),
+                        ext_f => ext.as_str(),
+                    );
+                    index_writer.add_document(doc);
+                }
             }
         });
     index_writer.commit().map_err(|e| e.to_string())?;
@@ -152,11 +158,23 @@ fn search_index(query: &str) -> Result<Vec<(String, String)>, String> {
     }
     Ok(top_docs_vec)
 }
+
+#[tauri::command]
+fn open_path(path: &str) -> Result<(), String> {
+    opener::open(path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, create_index, search_index])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            create_index,
+            search_index,
+            open_path
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
