@@ -2,14 +2,15 @@
 
 //manejo de paths y archivos
 use jwalk::rayon::iter::{ParallelBridge, ParallelIterator};
+use std::fs::create_dir_all;
 use std::path::Path;
-use std::{fs, sync::Arc};
+use std::{fs, path::PathBuf};
 //tantivy
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
-use tantivy::schema::*;
-use tantivy::TantivyError;
+use tantivy::schema::{self, *};
 use tantivy::{doc, Index, IndexWriter};
+use tantivy::{ReloadPolicy, TantivyError};
 //WalkDir
 use jwalk::{Parallelism, WalkDir};
 
@@ -21,10 +22,10 @@ fn greet(name: &str) -> String {
 fn create_index() -> tantivy::Result<()> {
     //El index se va a guardar en ~/.cache/aleph/index
     //Si no existe el path se crea
-    let idx_path = Path::new("~/.cache/aleph/index");
+    let idx_path = Path::new("/Users/bautistapessagno/.cache/aleph/index");
 
     if !idx_path.exists() {
-        fs::create_dir_all("~/.cache/aleph/index");
+        fs::create_dir_all("/Users/bautistapessagno/.cache/aleph/index")?;
     }
 
     let mut schema_builder = Schema::builder();
@@ -35,9 +36,17 @@ fn create_index() -> tantivy::Result<()> {
 
     let schema = schema_builder.build();
 
-    let index = Index::create_in_dir(&idx_path, schema.clone())?;
+    //  Abrir o crear el índice de forma segura
+    let index = match Index::create_in_dir(idx_path, schema.clone()) {
+        Ok(idx) => idx, // creado de cero
+        Err(TantivyError::IndexAlreadyExists) => {
+            fs::remove_file(idx_path.join("meta.json"))?;
+            Index::create_in_dir(idx_path, schema.clone())?
+        } // ya existía
+        Err(e) => return Err(e), // otro error
+    };
 
-    let mut index_writer: IndexWriter = index.writer_with_num_threads(4, 50_000_000)?;
+    let mut index_writer: IndexWriter = index.writer_with_num_threads(4, 80_000_000)?;
     //B: let writer = Arc::new(index.writer(50_000_000)?);
 
     let path_f = schema.get_field("path").unwrap();
@@ -45,27 +54,17 @@ fn create_index() -> tantivy::Result<()> {
     let ext_f = schema.get_field("extension").unwrap();
 
     //Vamos a indexar todo
-    let root_dir = Path::new("~/Desktop/");
+    let root_dir = Path::new("/Users/bautistapessagno/Desktop");
 
     WalkDir::new(root_dir)
         .skip_hidden(true)
         .follow_links(true)
         .parallelism(Parallelism::RayonNewPool(8))
-        .process_read_dir(|_depth, _path, _parent, children| {
-            children.retain(|entry_result| {
-                entry_result
-                    .as_ref()
-                    .map(|e| {
-                        let name = e.file_name().to_string_lossy();
-                        e.file_type().is_file() && !name.starts_with(".")
-                    })
-                    .unwrap_or(false)
-            });
-        })
         .into_iter()
         .par_bridge()
         .for_each(|res| {
             if let Ok(entry) = res {
+                println!("Viendo: {:?}", entry.path());
                 let path = entry.path().display().to_string();
                 let name = entry.file_name().to_string_lossy();
                 let ext = entry
@@ -83,14 +82,18 @@ fn create_index() -> tantivy::Result<()> {
             }
         });
     index_writer.commit()?;
+    index_writer.wait_merging_threads()?;
 
     Ok(())
 }
 
-fn search_index(path: &Path, query: &str) -> Result<Vec<(String, String)>, TantivyError> {
-    let index = Index::open_in_dir(path)?;
+fn search_index(query: &str) -> Result<Vec<(String, String)>, TantivyError> {
+    //Deberia chequear si se creo el index
+    let index = Index::open_in_dir("/Users/bautistapessagno/.cache/aleph/index")?;
 
     let reader = index.reader()?;
+
+    println!("Docs en índice: {}", reader.searcher().num_docs());
 
     let schema = index.schema();
 
@@ -134,4 +137,33 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![greet])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn index_test() {
+        //Primero me fijo de que se cree el index
+        let ans = create_index();
+        match ans {
+            Ok(_e) => println!("el index no paniqueo"),
+            Err(e) => eprint!("hay algun error al crear el index {:?}", e),
+        }
+        assert!(fs::exists("~/.cache/aleph/index/meta.json").unwrap_or(false));
+
+        //creo bien el index, pero encuentra cosas?
+        let search = match search_index("leetcode.c") {
+            Ok(top) => top,
+            Err(e) => panic!("Error al buscar: {:?}", e),
+        };
+        //si llegamos hasta aca no hay errores, falta ver que busque bien
+        assert!(!search.is_empty());
+
+        assert!(search.contains(&(
+            "leetcode.c".to_string(),
+            "/Users/bautistapessagno/Desktop/leetcode.c".to_string()
+        )));
+    }
 }
