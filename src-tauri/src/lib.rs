@@ -19,13 +19,15 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
-fn create_index() -> tantivy::Result<()> {
+#[tauri::command]
+fn create_index() -> Result<(), String> {
     //El index se va a guardar en ~/.cache/aleph/index
     //Si no existe el path se crea
     let idx_path = Path::new("/Users/bautistapessagno/.cache/aleph/index");
 
     if !idx_path.exists() {
-        fs::create_dir_all("/Users/bautistapessagno/.cache/aleph/index")?;
+        fs::create_dir_all("/Users/bautistapessagno/.cache/aleph/index")
+            .map_err(|e| e.to_string())?;
     }
 
     let mut schema_builder = Schema::builder();
@@ -40,13 +42,15 @@ fn create_index() -> tantivy::Result<()> {
     let index = match Index::create_in_dir(idx_path, schema.clone()) {
         Ok(idx) => idx, // creado de cero
         Err(TantivyError::IndexAlreadyExists) => {
-            fs::remove_file(idx_path.join("meta.json"))?;
-            Index::create_in_dir(idx_path, schema.clone())?
+            fs::remove_file(idx_path.join("meta.json")).map_err(|e| e.to_string())?;
+            Index::create_in_dir(idx_path, schema.clone()).map_err(|e| e.to_string())?
         } // ya existía
-        Err(e) => return Err(e), // otro error
+        Err(e) => return Err(e.to_string()), // otro error
     };
 
-    let mut index_writer: IndexWriter = index.writer_with_num_threads(4, 80_000_000)?;
+    let mut index_writer: IndexWriter = index
+        .writer_with_num_threads(10, 200_000_000)
+        .map_err(|e| e.to_string())?;
     //B: let writer = Arc::new(index.writer(50_000_000)?);
 
     let path_f = schema.get_field("path").unwrap();
@@ -64,7 +68,6 @@ fn create_index() -> tantivy::Result<()> {
         .par_bridge()
         .for_each(|res| {
             if let Ok(entry) = res {
-                println!("Viendo: {:?}", entry.path());
                 let path = entry.path().display().to_string();
                 let name = entry.file_name().to_string_lossy();
                 let ext = entry
@@ -81,19 +84,35 @@ fn create_index() -> tantivy::Result<()> {
                 index_writer.add_document(doc);
             }
         });
-    index_writer.commit()?;
-    index_writer.wait_merging_threads()?;
+    index_writer.commit().map_err(|e| e.to_string())?;
+    index_writer
+        .wait_merging_threads()
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }
 
-fn search_index(query: &str) -> Result<Vec<(String, String)>, TantivyError> {
+#[tauri::command]
+fn search_index(query: &str) -> Result<Vec<(String, String)>, String> {
     //Deberia chequear si se creo el index
-    let index = Index::open_in_dir("/Users/bautistapessagno/.cache/aleph/index")?;
+    let idx_path = Path::new("/Users/bautistapessagno/.cache/aleph/index");
 
-    let reader = index.reader()?;
+    if !idx_path.exists() {
+        fs::create_dir_all("/Users/bautistapessagno/.cache/aleph/index")
+            .map_err(|e| e.to_string())?;
+    }
 
-    println!("Docs en índice: {}", reader.searcher().num_docs());
+    //  Abrir o crear el índice de forma segura
+    let index = match Index::open_in_dir(idx_path) {
+        Ok(idx) => idx, // lo encuentra, lo habre
+        Err(TantivyError::IndexAlreadyExists) => {
+            create_index().map_err(|e| e.to_string())?;
+            Index::open_in_dir(idx_path).map_err(|e| e.to_string())?
+        } // ya existía
+        Err(e) => return Err(e.to_string()), // otro error
+    };
+
+    let reader = index.reader().map_err(|e| e.to_string())?;
 
     let schema = index.schema();
 
@@ -106,14 +125,17 @@ fn search_index(query: &str) -> Result<Vec<(String, String)>, TantivyError> {
     let mut query_parser = QueryParser::for_index(&index, vec![path_f, filename, ext_f]);
     query_parser.set_field_fuzzy(filename, false, 2, true);
 
-    let query = query_parser.parse_query(query)?;
+    let query = query_parser.parse_query(query).map_err(|e| e.to_string())?;
 
-    let top_docs = searcher.search(&query, &TopDocs::with_limit(10))?;
+    let top_docs = searcher
+        .search(&query, &TopDocs::with_limit(10))
+        .map_err(|e| e.to_string())?;
 
     let mut top_docs_vec: Vec<(String, String)> = Vec::with_capacity(top_docs.len());
 
     for (_score, doc_address) in top_docs {
-        let retrieved_doc: TantivyDocument = searcher.doc(doc_address)?;
+        let retrieved_doc: TantivyDocument =
+            searcher.doc(doc_address).map_err(|e| e.to_string())?;
         let name = retrieved_doc
             .get_first(filename)
             .and_then(|v| v.as_str())
@@ -134,7 +156,7 @@ fn search_index(query: &str) -> Result<Vec<(String, String)>, TantivyError> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![greet, create_index, search_index])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
