@@ -51,8 +51,10 @@ async fn create_index() -> Result<(), String> {
     let index: Index = match Index::create_in_dir(idx_path, schema.clone()) {
         Ok(idx) => idx, // creado de cero
         Err(TantivyError::IndexAlreadyExists) => {
-            fs::remove_file(idx_path.join("meta.json")).map_err(|e| e.to_string())?;
-            Index::create_in_dir(idx_path, schema.clone()).map_err(|e| e.to_string())?
+            // fs::remove_file(idx_path.join("meta.json")).map_err(|e| e.to_string())?;
+            // Index::create_in_dir(idx_path, schema.clone()).map_err(|e| e.to_string())?
+            //si lo encuentra lo abre
+            Index::open_in_dir(idx_path).map_err(|e| e.to_string())?
         } // ya existía
         Err(e) => return Err(e.to_string()), // otro error
     };
@@ -118,12 +120,13 @@ fn search_index(query: &str) -> Result<Vec<(String, String)>, String> {
     //  Abrir o crear el índice de forma segura
     let index = match Index::open_in_dir(idx_path) {
         Ok(idx) => idx, // lo encuentra, lo habre
-        Err(TantivyError::IndexAlreadyExists) => {
+        Err(_) => {
+            // Índice no existe o hay otro error
+            // Crear el índice y luego abrirlo
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async { create_index().await.map_err(|e| e.to_string()) })?;
             Index::open_in_dir(idx_path).map_err(|e| e.to_string())?
-        } // ya existía
-        Err(e) => return Err(e.to_string()), // otro error
+        }
     };
 
     let reader = index.reader().map_err(|e| e.to_string())?;
@@ -190,11 +193,12 @@ async fn create_app_launcher() -> Result<(), String> {
     //  Abrir o crear el índice de forma segura
     let index: Index = match Index::create_in_dir(idx_path, schema.clone()) {
         Ok(idx) => idx, // creado de cero
-        Err(TantivyError::IndexAlreadyExists) => {
-            fs::remove_file(idx_path.join("meta.json")).map_err(|e| e.to_string())?;
-            Index::create_in_dir(idx_path, schema.clone()).map_err(|e| e.to_string())?
+        Err(_) => {
+            // fs::remove_file(idx_path.join("meta.json")).map_err(|e| e.to_string())?;
+            // Index::create_in_dir(idx_path, schema.clone()).map_err(|e| e.to_string())?
+            //si lo encuentra lo abre
+            Index::open_in_dir(idx_path).map_err(|e| e.to_string())?
         } // ya existía
-        Err(e) => return Err(e.to_string()), // otro error
     };
 
     let mut index_writer: IndexWriter = index
@@ -268,12 +272,13 @@ fn app_search(query: &str) -> Result<Vec<(String, String)>, String> {
     //  Abrir o crear el índice de forma segura
     let index = match Index::open_in_dir(idx_path) {
         Ok(idx) => idx, // lo encuentra, lo habre
-        Err(TantivyError::IndexAlreadyExists) => {
+        Err(_) => {
+            // Índice no existe o hay otro error
+            // Crear el índice y luego abrirlo
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async { create_app_launcher().await.map_err(|e| e.to_string()) })?;
             Index::open_in_dir(idx_path).map_err(|e| e.to_string())?
-        } // ya existía
-        Err(e) => return Err(e.to_string()), // otro error
+        }
     };
 
     let reader = index.reader().map_err(|e| e.to_string())?;

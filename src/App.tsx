@@ -21,35 +21,26 @@ function App() {
     apps: 'not_created'
   });
 
-  // Crear índice específico cuando se necesite
-  const ensureIndexExists = useCallback(async (indexType: 'apps' | 'files') => {
-    const currentStatus = indexingStatus[indexType];
-    
-    // Si ya está listo o se está creando, no hacer nada
-    if (currentStatus === 'ready' || currentStatus === 'creating') {
-      return currentStatus;
-    }
-
+  // Detectar si el índice existe usando una búsqueda de prueba
+  const checkIndexStatus = useCallback(async (indexType: 'apps' | 'files') => {
     try {
-      // Marcar como creando
-      setIndexingStatus(prev => ({ ...prev, [indexType]: 'creating' }));
-      
+      // Intentar una búsqueda vacía para ver si el índice existe
       if (indexType === 'apps') {
-        await invoke("create_app_launcher");
+        await invoke<[string, string][]>("app_search", { query: "__test_empty__" });
       } else {
-        await invoke("create_index");
+        await invoke<[string, string][]>("search_index", { query: "__test_empty__" });
       }
       
-      // Marcar como listo
+      // Si llegamos aquí, el índice existe y está listo
       setIndexingStatus(prev => ({ ...prev, [indexType]: 'ready' }));
       return 'ready';
       
     } catch (error) {
-      console.error(`Error creating ${indexType} index:`, error);
-      setIndexingStatus(prev => ({ ...prev, [indexType]: 'error' }));
-      return 'error';
+      // Si falla, puede ser que el índice no existe o se está creando
+      setIndexingStatus(prev => ({ ...prev, [indexType]: 'not_created' }));
+      return 'not_created';
     }
-  }, [indexingStatus]);
+  }, []);
 
   // Función para detectar si un archivo es una aplicación
   const isApplication = (_path: string, name: string): boolean => {
@@ -63,7 +54,7 @@ function App() {
     return executableExtensions.some(ext => lowerName.endsWith(ext));
   };
 
-  // Función de búsqueda con lazy loading de índices
+  // Función de búsqueda que deja que Rust maneje la creación de índices automáticamente
   const searchFiles = useCallback(async (searchQuery: string) => {
     if (!searchQuery.trim()) {
       setResults([]);
@@ -73,19 +64,11 @@ function App() {
     try {
       setIsLoading(true);
       
-      // Asegurar que el índice correspondiente existe
       const indexType = searchMode === 'apps' ? 'apps' : 'files';
-      const indexStatus = await ensureIndexExists(indexType);
       
-      if (indexStatus === 'error') {
-        setResults([]);
-        return;
-      }
-      
-      // Si el índice se está creando, mostrar mensaje y esperar
-      if (indexStatus === 'creating') {
-        // La función ensureIndexExists ya espera hasta que termine
-        // Solo llegamos aquí si ya está listo
+      // Si es la primera búsqueda en este índice, marcarlo como "creando"
+      if (indexingStatus[indexType] === 'not_created') {
+        setIndexingStatus(prev => ({ ...prev, [indexType]: 'creating' }));
       }
 
       let searchResults: [string, string][] = [];
@@ -99,6 +82,9 @@ function App() {
           query: searchQuery 
         });
       }
+      
+      // Si llegamos aquí, el índice está listo
+      setIndexingStatus(prev => ({ ...prev, [indexType]: 'ready' }));
       
       const formattedResults: SearchResult[] = searchResults.map(([name, path]) => ({
         name,
@@ -120,11 +106,13 @@ function App() {
       setSelectedIndex(0);
     } catch (error) {
       console.error("Error searching:", error);
+      const indexType = searchMode === 'apps' ? 'apps' : 'files';
+      setIndexingStatus(prev => ({ ...prev, [indexType]: 'error' }));
       setResults([]);
     } finally {
       setIsLoading(false);
     }
-  }, [searchMode, ensureIndexExists]);
+  }, [searchMode, indexingStatus]);
 
   // Debounce para la búsqueda
   useEffect(() => {
@@ -134,6 +122,18 @@ function App() {
 
     return () => clearTimeout(timeoutId);
   }, [query, searchFiles]);
+
+  // Verificar al inicio qué índices ya están creados
+  useEffect(() => {
+    const checkInitialIndexStatus = async () => {
+      await Promise.all([
+        checkIndexStatus('apps'),
+        checkIndexStatus('files')
+      ]);
+    };
+    
+    checkInitialIndexStatus();
+  }, [checkIndexStatus]);
 
   // Limpiar resultados cuando cambia el modo de búsqueda
   useEffect(() => {
@@ -279,8 +279,8 @@ function App() {
               <div className="indexing-hints">
                 <p className="lazy-hint">
                   {searchMode === 'files' 
-                    ? "File index will be created on first search"
-                    : "App index will be created on first search"
+                    ? "File index will be created automatically on first search"
+                    : "App index will be created automatically on first search"
                   }
                 </p>
               </div>
