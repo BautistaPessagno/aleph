@@ -25,4 +25,7 @@ serde_json = "1"
 tantivy = "0.24.2"
 jwalk = "0.8.1"
 opener = "0.8.2"
-
+dirs = "6.0.0"
+rust-fuzzy-search = "0.1.1"
+trpl = "0.2.0"
+tokio = "1.47.0"

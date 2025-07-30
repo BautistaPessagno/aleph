@@ -8,33 +8,51 @@ interface SearchResult {
   isApp?: boolean;
 }
 
+type SearchMode = 'apps' | 'files';
+
 function App() {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
-  const [indexCreated, setIndexCreated] = useState(false);
+  const [searchMode, setSearchMode] = useState<SearchMode>('apps');
+  const [indexingStatus, setIndexingStatus] = useState({
+    files: 'not_created', // 'not_created' | 'creating' | 'ready' | 'error'
+    apps: 'not_created'
+  });
 
-  // Crear índice al iniciar la aplicación
-  useEffect(() => {
-    const createIndex = async () => {
-      try {
-        setIsLoading(true);
-        await invoke("create_index");
-        setIndexCreated(true);
-      } catch (error) {
-        console.error("Error creating index:", error);
-      } finally {
-        setIsLoading(false);
-      }
-    };
+  // Crear índice específico cuando se necesite
+  const ensureIndexExists = useCallback(async (indexType: 'apps' | 'files') => {
+    const currentStatus = indexingStatus[indexType];
     
-    createIndex();
-  }, []);
+    // Si ya está listo o se está creando, no hacer nada
+    if (currentStatus === 'ready' || currentStatus === 'creating') {
+      return currentStatus;
+    }
+
+    try {
+      // Marcar como creando
+      setIndexingStatus(prev => ({ ...prev, [indexType]: 'creating' }));
+      
+      if (indexType === 'apps') {
+        await invoke("create_app_launcher");
+      } else {
+        await invoke("create_index");
+      }
+      
+      // Marcar como listo
+      setIndexingStatus(prev => ({ ...prev, [indexType]: 'ready' }));
+      return 'ready';
+      
+    } catch (error) {
+      console.error(`Error creating ${indexType} index:`, error);
+      setIndexingStatus(prev => ({ ...prev, [indexType]: 'error' }));
+      return 'error';
+    }
+  }, [indexingStatus]);
 
   // Función para detectar si un archivo es una aplicación
-  const isApplication = (path: string, name: string): boolean => {
-    const lowerPath = path.toLowerCase();
+  const isApplication = (_path: string, name: string): boolean => {
     const lowerName = name.toLowerCase();
     
     // macOS applications
@@ -45,31 +63,58 @@ function App() {
     return executableExtensions.some(ext => lowerName.endsWith(ext));
   };
 
-  // Función de búsqueda con debounce
+  // Función de búsqueda con lazy loading de índices
   const searchFiles = useCallback(async (searchQuery: string) => {
-    if (!searchQuery.trim() || !indexCreated) {
+    if (!searchQuery.trim()) {
       setResults([]);
       return;
     }
 
     try {
       setIsLoading(true);
-      const searchResults = await invoke<[string, string][]>("search_index", { 
-        query: searchQuery 
-      });
+      
+      // Asegurar que el índice correspondiente existe
+      const indexType = searchMode === 'apps' ? 'apps' : 'files';
+      const indexStatus = await ensureIndexExists(indexType);
+      
+      if (indexStatus === 'error') {
+        setResults([]);
+        return;
+      }
+      
+      // Si el índice se está creando, mostrar mensaje y esperar
+      if (indexStatus === 'creating') {
+        // La función ensureIndexExists ya espera hasta que termine
+        // Solo llegamos aquí si ya está listo
+      }
+
+      let searchResults: [string, string][] = [];
+
+      if (searchMode === 'apps') {
+        searchResults = await invoke<[string, string][]>("app_search", { 
+          query: searchQuery 
+        });
+      } else {
+        searchResults = await invoke<[string, string][]>("search_index", { 
+          query: searchQuery 
+        });
+      }
       
       const formattedResults: SearchResult[] = searchResults.map(([name, path]) => ({
         name,
         path,
-        isApp: isApplication(path, name)
+        isApp: searchMode === 'apps' || isApplication(path, name)
       }));
 
-      // Priorizar aplicaciones en los resultados
-      const sortedResults = formattedResults.sort((a, b) => {
-        if (a.isApp && !b.isApp) return -1;
-        if (!a.isApp && b.isApp) return 1;
-        return 0;
-      });
+      // Para el modo apps, todos los resultados son apps
+      // Para files, priorizar aplicaciones si las hay
+      const sortedResults = searchMode === 'apps' 
+        ? formattedResults 
+        : formattedResults.sort((a, b) => {
+            if (a.isApp && !b.isApp) return -1;
+            if (!a.isApp && b.isApp) return 1;
+            return 0;
+          });
 
       setResults(sortedResults);
       setSelectedIndex(0);
@@ -79,7 +124,7 @@ function App() {
     } finally {
       setIsLoading(false);
     }
-  }, [indexCreated]);
+  }, [searchMode, ensureIndexExists]);
 
   // Debounce para la búsqueda
   useEffect(() => {
@@ -89,6 +134,13 @@ function App() {
 
     return () => clearTimeout(timeoutId);
   }, [query, searchFiles]);
+
+  // Limpiar resultados cuando cambia el modo de búsqueda
+  useEffect(() => {
+    setQuery("");
+    setResults([]);
+    setSelectedIndex(0);
+  }, [searchMode]);
 
   // Manejar navegación con teclado
   useEffect(() => {
@@ -154,27 +206,38 @@ function App() {
     }
   };
 
-  if (!indexCreated && isLoading) {
-    return (
-      <div className="app">
-        <div className="loading">
-          <div className="spinner"></div>
-          <p>Indexing files...</p>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="app">
       <div className="search-container">
+        {/* Mode Selector */}
+        <div className="mode-selector">
+          <button
+            className={`mode-button ${searchMode === 'apps' ? 'active' : ''}`}
+            onClick={() => setSearchMode('apps')}
+          >
+            🚀 Apps
+            {indexingStatus.apps === 'creating' && <span className="indexing-indicator">⚡</span>}
+          </button>
+          <button
+            className={`mode-button ${searchMode === 'files' ? 'active' : ''}`}
+            onClick={() => setSearchMode('files')}
+          >
+            📁 Files
+            {indexingStatus.files === 'creating' && <span className="indexing-indicator">⚡</span>}
+          </button>
+        </div>
+
         <div className="search-box">
           <span className="search-icon">🔍</span>
           <input
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search files and applications..."
+            placeholder={
+              searchMode === 'apps' 
+                ? (indexingStatus.apps === 'creating' ? "Creating app index..." : "Search applications...")
+                : (indexingStatus.files === 'creating' ? "Creating file index..." : "Search files...")
+            }
             className="search-input"
             autoFocus
           />
@@ -209,12 +272,51 @@ function App() {
         {query && !isLoading && results.length === 0 && (
           <div className="no-results">
             <p>No results found for "{query}"</p>
+            {(
+              (searchMode === 'apps' && indexingStatus.apps === 'not_created') ||
+              (searchMode === 'files' && indexingStatus.files === 'not_created')
+            ) && (
+              <div className="indexing-hints">
+                <p className="lazy-hint">
+                  {searchMode === 'files' 
+                    ? "File index will be created on first search"
+                    : "App index will be created on first search"
+                  }
+                </p>
+              </div>
+            )}
           </div>
         )}
       </div>
 
       <div className="help-text">
         <p>Type to search • ↑↓ to navigate • Enter to open • Esc to clear</p>
+        <div className="indexing-status">
+          <span className={`status-badge ${
+            indexingStatus.apps === 'ready' ? 'ready' : 
+            indexingStatus.apps === 'creating' ? 'indexing' : 
+            'not-created'
+          }`}>
+            🚀 Apps: {
+              indexingStatus.apps === 'ready' ? 'Ready' :
+              indexingStatus.apps === 'creating' ? 'Creating...' :
+              indexingStatus.apps === 'error' ? 'Error' :
+              'Not Created'
+            }
+          </span>
+          <span className={`status-badge ${
+            indexingStatus.files === 'ready' ? 'ready' : 
+            indexingStatus.files === 'creating' ? 'indexing' : 
+            'not-created'
+          }`}>
+            📁 Files: {
+              indexingStatus.files === 'ready' ? 'Ready' :
+              indexingStatus.files === 'creating' ? 'Creating...' :
+              indexingStatus.files === 'error' ? 'Error' :
+              'Not Created'
+            }
+          </span>
+        </div>
       </div>
     </div>
   );
