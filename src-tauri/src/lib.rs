@@ -27,7 +27,6 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
-#[tauri::command]
 async fn create_index() -> Result<(), String> {
     //El index se va a guardar en ~/.cache/aleph/index
     //Si no existe el path se crea
@@ -170,7 +169,6 @@ fn search_index(query: &str) -> Result<Vec<(String, String)>, String> {
     Ok(top_docs_vec)
 }
 
-#[tauri::command]
 async fn create_app_launcher() -> Result<(), String> {
     //El index se va a guardar en ~/.cache/aleph/index
     //Si no existe el path se crea
@@ -334,10 +332,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             greet,
-            create_index,
             search_index,
             open_path,
-            create_app_launcher,
             app_search
         ])
         .run(tauri::generate_context!())

@@ -189,6 +189,14 @@ function App() {
     }
   };
 
+  // Formatear nombre para visualización (remover .app de aplicaciones)
+  const getDisplayName = (item: SearchResult) => {
+    if (item.isApp && item.name.toLowerCase().endsWith('.app')) {
+      return item.name.slice(0, -4); // Remover ".app"
+    }
+    return item.name;
+  };
+
   // Obtener ícono según el tipo de archivo
   const getItemIcon = (item: SearchResult) => {
     if (item.isApp) return "🚀";
@@ -260,7 +268,7 @@ function App() {
               >
                 <span className="item-icon">{getItemIcon(item)}</span>
                 <div className="item-info">
-                  <div className="item-name">{item.name}</div>
+                  <div className="item-name">{getDisplayName(item)}</div>
                   <div className="item-path">{item.path}</div>
                 </div>
                 {item.isApp && <span className="app-badge">APP</span>}
