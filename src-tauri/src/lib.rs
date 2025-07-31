@@ -19,6 +19,11 @@ use dirs;
 //tokio
 use tokio;
 use std::sync::LazyLock;
+//icon extraction
+use image::{ImageFormat, DynamicImage, GenericImage};
+use base64::{Engine as _, engine::general_purpose};
+use sha2::{Sha256, Digest};
+use std::io::Cursor;
 
 // Runtime estático reutilizable
 static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
@@ -292,11 +297,19 @@ async fn create_app_launcher() -> Result<(), String> {
         fs::create_dir_all(idx_path).map_err(|e| e.to_string())?;
     }
 
+    // Create icon cache directory
+    let icon_cache_path = home.join(".cache/aleph/icons");
+    if !icon_cache_path.exists() {
+        fs::create_dir_all(&icon_cache_path).map_err(|e| e.to_string())?;
+    }
+
     let mut schema_builder = Schema::builder();
 
     schema_builder.add_text_field("path", STORED | STRING);
     schema_builder.add_text_field("filename", TEXT | STORED);
     schema_builder.add_text_field("extension", STRING | STORED);
+    schema_builder.add_text_field("icon_path", STORED | STRING);
+    schema_builder.add_text_field("icon_base64", STORED | STRING);
 
     let schema = schema_builder.build();
 
@@ -321,6 +334,8 @@ async fn create_app_launcher() -> Result<(), String> {
     let path_f = schema.get_field("path").unwrap();
     let filename = schema.get_field("filename").unwrap();
     let ext_f = schema.get_field("extension").unwrap();
+    let _icon_path_f = schema.get_field("icon_path").unwrap();
+    let _icon_base64_f = schema.get_field("icon_base64").unwrap();
 
     //Vamos a indexar todo
     let root_dir = Path::new("/Applications");
@@ -366,6 +381,83 @@ async fn create_app_launcher() -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+fn extract_app_icon(app_path: &Path, icon_cache_path: &Path) -> Result<(String, String), String> {
+    // Generate a hash for the app path to create a unique filename
+    let mut hasher = Sha256::new();
+    hasher.update(app_path.to_string_lossy().as_bytes());
+    let hash = format!("{:x}", hasher.finalize());
+    let icon_filename = format!("{}.png", &hash[..16]);
+    let icon_file_path = icon_cache_path.join(&icon_filename);
+    
+    // If icon already exists in cache, return it
+    if icon_file_path.exists() {
+        if let Ok(icon_data) = fs::read(&icon_file_path) {
+            let base64_icon = general_purpose::STANDARD.encode(&icon_data);
+            return Ok((icon_file_path.to_string_lossy().to_string(), base64_icon));
+        }
+    }
+    
+    // Try to extract icon from macOS app bundle
+    let icon_path = app_path.join("Contents/Resources");
+    
+    if icon_path.exists() {
+        // Look for icns files
+        if let Ok(entries) = fs::read_dir(&icon_path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Some(extension) = path.extension() {
+                    if extension == "icns" {
+                        // For now, we'll create a placeholder icon
+                        // In a full implementation, you'd parse the ICNS file
+                        if let Ok(placeholder_icon) = create_placeholder_icon(&app_path.file_name().unwrap_or_default().to_string_lossy()) {
+                            if let Ok(_) = fs::write(&icon_file_path, &placeholder_icon) {
+                                let base64_icon = general_purpose::STANDARD.encode(&placeholder_icon);
+                                return Ok((icon_file_path.to_string_lossy().to_string(), base64_icon));
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Fallback: create a simple placeholder icon
+    if let Ok(placeholder_icon) = create_placeholder_icon(&app_path.file_name().unwrap_or_default().to_string_lossy()) {
+        if let Ok(_) = fs::write(&icon_file_path, &placeholder_icon) {
+            let base64_icon = general_purpose::STANDARD.encode(&placeholder_icon);
+            return Ok((icon_file_path.to_string_lossy().to_string(), base64_icon));
+        }
+    }
+    
+    Err("Could not extract or create icon".to_string())
+}
+
+fn create_placeholder_icon(app_name: &str) -> Result<Vec<u8>, String> {
+    // Create a simple 64x64 colored square as placeholder
+    let mut img = DynamicImage::new_rgb8(64, 64);
+    
+    // Use the first character of the app name to determine color
+    let first_char = app_name.chars().next().unwrap_or('A') as u8;
+    let color_r = (first_char.wrapping_mul(67)) % 200 + 55;
+    let color_g = (first_char.wrapping_mul(113)) % 200 + 55;
+    let color_b = (first_char.wrapping_mul(179)) % 200 + 55;
+    
+    // Fill the image with the color
+    for x in 0..64 {
+        for y in 0..64 {
+            img.put_pixel(x, y, image::Rgba([color_r, color_g, color_b, 255]));
+        }
+    }
+    
+    // Convert to PNG bytes
+    let mut buffer = Vec::new();
+    let mut cursor = Cursor::new(&mut buffer);
+    img.write_to(&mut cursor, ImageFormat::Png).map_err(|e| e.to_string())?;
+    
+    Ok(buffer)
 }
 
 #[tauri::command]
@@ -432,6 +524,31 @@ fn app_search(query: &str) -> Result<Vec<(String, String)>, String> {
 }
 
 #[tauri::command]
+fn get_app_icon(app_path: &str) -> Result<String, String> {
+    let home = dirs::home_dir().ok_or("Could not get home directory")?;
+    let icon_cache_path = home.join(".cache/aleph/icons");
+    
+    if !icon_cache_path.exists() {
+        fs::create_dir_all(&icon_cache_path).map_err(|e| e.to_string())?;
+    }
+    
+    let app_path_buf = PathBuf::from(app_path);
+    match extract_app_icon(&app_path_buf, &icon_cache_path) {
+        Ok((_, base64_icon)) => Ok(base64_icon),
+        Err(e) => {
+            // Return a default icon as base64
+            if let Ok(placeholder_icon) = create_placeholder_icon(&app_path_buf.file_name().unwrap_or_default().to_string_lossy()) {
+                let base64_icon = general_purpose::STANDARD.encode(&placeholder_icon);
+                Ok(base64_icon)
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+
+#[tauri::command]
 fn open_path(path: &str) -> Result<(), String> {
     opener::open(path).map_err(|e| e.to_string())?;
     Ok(())
@@ -445,7 +562,8 @@ pub fn run() {
             greet,
             search_index,
             open_path,
-            app_search
+            app_search,
+            get_app_icon
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

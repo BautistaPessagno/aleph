@@ -196,6 +196,16 @@ body {
   font-size: 20px;
   margin-right: 12px;
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.app-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  object-fit: cover;
 }
 
 .item-info {
@@ -356,6 +366,20 @@ body {
   }
 }
 
+/* App Icon Styles */
+.app-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+
+.item-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 /* Smooth transitions for mode changes */
 .mode-button, .search-input {
   transition: all 0.2s ease;
@@ -364,4 +388,18 @@ body {
 /* Enhanced loading states */
 .loading .spinner {
   margin-bottom: 8px;
+}
+
+/* App Icon Styles */
+.app-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+
+.item-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }

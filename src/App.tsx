@@ -6,6 +6,7 @@ interface SearchResult {
   name: string;
   path: string;
   isApp?: boolean;
+  icon?: string; // base64 encoded icon
 }
 
 type SearchMode = 'apps' | 'files';
@@ -102,7 +103,18 @@ function App() {
             return 0;
           });
 
-      setResults(sortedResults);
+      // Load icons for apps
+      const resultsWithIcons = await Promise.all(
+        sortedResults.map(async (result) => {
+          if (result.isApp) {
+            const icon = await loadAppIcon(result.path);
+            return { ...result, icon };
+          }
+          return result;
+        })
+      );
+
+      setResults(resultsWithIcons);
       setSelectedIndex(0);
     } catch (error) {
       console.error("Error searching:", error);
@@ -177,6 +189,17 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [results, selectedIndex]);
 
+  // Función para cargar iconos de aplicaciones
+  const loadAppIcon = async (appPath: string): Promise<string | null> => {
+    try {
+      const iconBase64 = await invoke<string>("get_app_icon", { appPath });
+      return iconBase64;
+    } catch (error) {
+      console.error("Error loading app icon:", error);
+      return null;
+    }
+  };
+
   // Función para abrir archivo/aplicación
   const openItem = async (item: SearchResult) => {
     try {
@@ -199,6 +222,11 @@ function App() {
 
   // Obtener ícono según el tipo de archivo
   const getItemIcon = (item: SearchResult) => {
+    // For apps, use the actual icon if available, otherwise fallback to emoji
+    if (item.isApp && item.icon) {
+      return <img src={`data:image/png;base64,${item.icon}`} alt="" className="app-icon" />;
+    }
+    
     if (item.isApp) return "🚀";
     
     const extension = item.name.split('.').pop()?.toLowerCase();
