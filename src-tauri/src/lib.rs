@@ -1,4 +1,4 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+// Learn more about Tauri commands at https://tauri.app/develop/rust/
 
 //manejo de paths y archivos
 use jwalk::rayon::iter::{ParallelBridge, ParallelIterator};
@@ -8,7 +8,7 @@ use std::{fs, path::PathBuf};
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::*;
-use tantivy::{doc, Index, IndexWriter};
+use tantivy::{doc, Index, IndexWriter, Term};
 use tantivy::TantivyError;
 //WalkDir
 use jwalk::{Parallelism, WalkDir};
@@ -19,11 +19,39 @@ use dirs;
 //tokio
 use tokio;
 use std::sync::LazyLock;
+// File system watching and time tracking
+use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use chrono::{DateTime, Utc};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
 
 // Runtime estático reutilizable
 static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime")
 });
+
+// Global file status tracking
+static FILE_STATUS: LazyLock<Arc<Mutex<HashMap<String, FileStatus>>>> = LazyLock::new(|| {
+    Arc::new(Mutex::new(HashMap::new()))
+});
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FileStatus {
+    pub last_modified: DateTime<Utc>,
+    pub last_opened: Option<DateTime<Utc>>,
+    pub access_count: u32,
+    pub status: FileEventStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum FileEventStatus {
+    Created,
+    Modified,
+    Opened,
+    Removed,
+    Normal,
+}
 
 fn get_home_child_folders() -> Result<Vec<PathBuf>, String> {
     let home = dirs::home_dir().ok_or("Could not get home directory")?;
@@ -45,6 +73,295 @@ fn get_home_child_folders() -> Result<Vec<PathBuf>, String> {
     }
     
     Ok(folders)
+}
+
+// Notify system implementation
+pub async fn start_file_watcher(paths: Vec<PathBuf>) -> Result<(), String> {
+    let (tx, mut rx) = mpsc::channel(1000);
+    
+    let mut watcher = RecommendedWatcher::new(
+        move |res: Result<Event, notify::Error>| {
+            if let Ok(event) = res {
+                let _ = tx.blocking_send(event);
+            }
+        },
+        Config::default(),
+    ).map_err(|e| e.to_string())?;
+
+    // Watch all specified paths
+    for path in paths {
+        if path.exists() {
+            watcher.watch(&path, RecursiveMode::Recursive)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    // Process events in background
+    tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            handle_file_event(event).await;
+        }
+    });
+
+    // Keep watcher alive by moving it to a background task
+    tokio::spawn(async move {
+        let _watcher = watcher;
+        // Keep the watcher alive indefinitely
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+        }
+    });
+
+    Ok(())
+}
+
+async fn handle_file_event(event: Event) {
+    let now = Utc::now();
+    
+    for path in event.paths {
+        let path_str = path.display().to_string();
+        
+        // Skip hidden files and unwanted directories
+        if should_skip_path(&path) {
+            continue;
+        }
+        
+        let status = match event.kind {
+            EventKind::Create(_) => FileEventStatus::Created,
+            EventKind::Modify(_) => FileEventStatus::Modified,
+            EventKind::Remove(_) => FileEventStatus::Removed,
+            EventKind::Access(_) => FileEventStatus::Opened,
+            _ => FileEventStatus::Normal,
+        };
+        
+        // Update file status (release lock before async operations)
+        let should_add_to_index;
+        let should_update_index;
+        let should_remove_from_index;
+        
+        {
+            if let Ok(mut file_status_map) = FILE_STATUS.lock() {
+                let file_status = file_status_map.entry(path_str.clone()).or_insert(FileStatus {
+                    last_modified: now,
+                    last_opened: None,
+                    access_count: 0,
+                    status: FileEventStatus::Normal,
+                });
+                
+                should_add_to_index = status == FileEventStatus::Created;
+                should_update_index = status == FileEventStatus::Modified;
+                should_remove_from_index = status == FileEventStatus::Removed;
+                
+                match status {
+                    FileEventStatus::Created => {
+                        file_status.status = FileEventStatus::Created;
+                        file_status.last_modified = now;
+                    },
+                    FileEventStatus::Modified => {
+                        file_status.status = FileEventStatus::Modified;
+                        file_status.last_modified = now;
+                    },
+                    FileEventStatus::Opened => {
+                        file_status.last_opened = Some(now);
+                        file_status.access_count += 1;
+                        if file_status.status == FileEventStatus::Normal {
+                            file_status.status = FileEventStatus::Opened;
+                        }
+                    },
+                    FileEventStatus::Removed => {
+                        file_status.status = FileEventStatus::Removed;
+                    },
+                    _ => {}
+                }
+            } else {
+                should_add_to_index = false;
+                should_update_index = false;
+                should_remove_from_index = false;
+            }
+        }
+        
+        // Perform index operations after releasing the lock
+        if should_add_to_index {
+            let _ = add_file_to_index(&path).await;
+        } else if should_update_index {
+            let _ = update_file_in_index(&path).await;
+        } else if should_remove_from_index {
+            let _ = remove_file_from_index(&path).await;
+        }
+    }
+}
+
+fn should_skip_path(path: &Path) -> bool {
+    if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+        if file_name.starts_with('.') {
+            return true;
+        }
+    }
+    
+    // Skip unwanted directories
+    if path.is_dir() {
+        if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
+            let skip_dirs = [
+                "node_modules", "target", "build", "dist", "tmp", "temp",
+                ".git", ".svn", ".hg", "__pycache__", ".cache", ".vscode",
+                ".idea", "coverage", ".nyc_output", "logs", "log"
+            ];
+            return skip_dirs.contains(&dir_name);
+        }
+    }
+    
+    // Skip unwanted file extensions
+    if path.is_file() {
+        let ext = path.extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        
+        let skip_extensions = [
+            "tmp", "temp", "bak", "swp", "swo", "log", "cache", 
+            "lock", "pid", "DS_Store"
+        ];
+        
+        if skip_extensions.contains(&ext.as_str()) {
+            return true;
+        }
+    }
+    
+    false
+}
+
+// Index management functions
+async fn add_file_to_index(file_path: &Path) -> Result<(), String> {
+    if !file_path.is_file() {
+        return Ok(());
+    }
+    
+    // Determine which index to update based on path
+    let home = dirs::home_dir().ok_or("Could not get home directory")?;
+    let parent_dir = file_path.parent().ok_or("Could not get parent directory")?;
+    
+    // Find the appropriate index
+    let mut index_folder = None;
+    let mut current = parent_dir;
+    
+    while let Some(parent) = current.parent() {
+        if parent == home {
+            if let Some(folder_name) = current.file_name().and_then(|n| n.to_str()) {
+                index_folder = Some(folder_name.to_string());
+                break;
+            }
+        }
+        current = parent;
+    }
+    
+    if let Some(folder_name) = index_folder {
+        let idx_path = home.join(".cache/aleph/index").join(&folder_name);
+        
+        if idx_path.exists() {
+            if let Ok(index) = Index::open_in_dir(&idx_path) {
+                let schema = index.schema();
+                let path_f = schema.get_field("path").unwrap();
+                let filename = schema.get_field("filename").unwrap();
+                let ext_f = schema.get_field("extension").unwrap();
+                
+                if let Ok(mut writer) = index.writer_with_num_threads::<TantivyDocument>(1, 50_000_000) {
+                    let path_str = file_path.display().to_string();
+                    let name = file_path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let ext = file_path.extension()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    
+                    let doc = doc!(
+                        path_f => path_str,
+                        filename => name.as_str(),
+                        ext_f => ext.as_str(),
+                    );
+                    
+                    writer.add_document(doc).map_err(|e| e.to_string())?;
+                    writer.commit().map_err(|e| e.to_string())?;
+                }
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+async fn update_file_in_index(file_path: &Path) -> Result<(), String> {
+    // For updates, we remove and re-add the file
+    remove_file_from_index(file_path).await?;
+    add_file_to_index(file_path).await?;
+    Ok(())
+}
+
+async fn remove_file_from_index(file_path: &Path) -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("Could not get home directory")?;
+    let parent_dir = file_path.parent().ok_or("Could not get parent directory")?;
+    
+    // Find the appropriate index
+    let mut index_folder = None;
+    let mut current = parent_dir;
+    
+    while let Some(parent) = current.parent() {
+        if parent == home {
+            if let Some(folder_name) = current.file_name().and_then(|n| n.to_str()) {
+                index_folder = Some(folder_name.to_string());
+                break;
+            }
+        }
+        current = parent;
+    }
+    
+    if let Some(folder_name) = index_folder {
+        let idx_path = home.join(".cache/aleph/index").join(&folder_name);
+        
+        if idx_path.exists() {
+            if let Ok(index) = Index::open_in_dir(&idx_path) {
+                let schema = index.schema();
+                let path_f = schema.get_field("path").unwrap();
+                
+                if let Ok(mut writer) = index.writer_with_num_threads::<TantivyDocument>(1, 50_000_000) {
+                    let path_str = file_path.display().to_string();
+                    let term = Term::from_field_text(path_f, &path_str);
+                    writer.delete_term(term);
+                    writer.commit().map_err(|e| e.to_string())?;
+                }
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+// Function to get file priority based on status
+fn get_file_priority(path: &str) -> i32 {
+    if let Ok(file_status_map) = FILE_STATUS.lock() {
+        if let Some(status) = file_status_map.get(path) {
+            let base_priority = match status.status {
+                FileEventStatus::Created => 1000,
+                FileEventStatus::Modified => 800,
+                FileEventStatus::Opened => 600,
+                FileEventStatus::Normal => 100,
+                FileEventStatus::Removed => 0,
+            };
+            
+            // Add access count bonus
+            let access_bonus = (status.access_count as i32).min(100);
+            
+            // Add recency bonus (more recent = higher priority)
+            let hours_since_modified = Utc::now()
+                .signed_duration_since(status.last_modified)
+                .num_hours();
+            let recency_bonus = (24 - hours_since_modified.min(24)).max(0) as i32 * 10;
+            
+            return base_priority + access_bonus + recency_bonus;
+        }
+    }
+    100 // Default priority
 }
 
 #[tauri::command]
@@ -87,7 +404,7 @@ async fn create_index(root_dir: &Path) -> Result<(), String> {
     };
 
     let mut index_writer: IndexWriter = index
-        .writer_with_num_threads(10, 200_000_000)
+        .writer_with_num_threads::<TantivyDocument>(10, 200_000_000)
         .map_err(|e| e.to_string())?;
     //B: let writer = Arc::new(index.writer(50_000_000)?);
 
@@ -173,7 +490,7 @@ async fn create_index(root_dir: &Path) -> Result<(), String> {
 fn search_index(query: &str) -> Result<Vec<(String, String)>, String> {
     let home = dirs::home_dir().unwrap();
     
-    // Función auxiliar para buscar en un índice específico
+    // Función auxiliar para buscar en un índice específico con prioridad por status
     fn search_in_index(idx_path: &Path, query: &str, limit: usize) -> Vec<(String, String)> {
         let mut results = Vec::new();
         
@@ -191,8 +508,11 @@ fn search_index(query: &str) -> Result<Vec<(String, String)>, String> {
                 query_parser.set_field_fuzzy(filename, false, 2, true);
                 
                 if let Ok(parsed_query) = query_parser.parse_query(query) {
-                    if let Ok(top_docs) = searcher.search(&parsed_query, &TopDocs::with_limit(limit)) {
-                        for (_score, doc_address) in top_docs {
+                    // Get more results than needed for sorting
+                    if let Ok(top_docs) = searcher.search(&parsed_query, &TopDocs::with_limit(limit * 2)) {
+                        let mut scored_results = Vec::new();
+                        
+                        for (score, doc_address) in top_docs {
                             if let Ok(retrieved_doc) = searcher.doc(doc_address) {
                                 let retrieved_doc: TantivyDocument = retrieved_doc;
                                 let name = retrieved_doc
@@ -207,8 +527,20 @@ fn search_index(query: &str) -> Result<Vec<(String, String)>, String> {
                                     .unwrap_or_default()
                                     .to_owned();
                                 
-                                results.push((name, path));
+                                // Calculate combined score (search relevance + file priority)
+                                let file_priority = get_file_priority(&path) as f32;
+                                let combined_score = score + (file_priority / 1000.0); // Normalize priority
+                                
+                                scored_results.push((combined_score, name, path));
                             }
+                        }
+                        
+                        // Sort by combined score (higher is better)
+                        scored_results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                        
+                        // Take only the requested number of results
+                        for (_, name, path) in scored_results.into_iter().take(limit) {
+                            results.push((name, path));
                         }
                     }
                 }
@@ -406,12 +738,12 @@ fn app_search(query: &str) -> Result<Vec<(String, String)>, String> {
     let query = query_parser.parse_query(query).map_err(|e| e.to_string())?;
 
     let top_docs = searcher
-        .search(&query, &TopDocs::with_limit(10))
+        .search(&query, &TopDocs::with_limit(20)) // Get more results for sorting
         .map_err(|e| e.to_string())?;
 
-    let mut top_docs_vec: Vec<(String, String)> = Vec::with_capacity(top_docs.len());
+    let mut scored_results = Vec::new();
 
-    for (_score, doc_address) in top_docs {
+    for (score, doc_address) in top_docs {
         let retrieved_doc: TantivyDocument =
             searcher.doc(doc_address).map_err(|e| e.to_string())?;
         let name = retrieved_doc
@@ -426,15 +758,111 @@ fn app_search(query: &str) -> Result<Vec<(String, String)>, String> {
             .unwrap_or_default()
             .to_owned();
 
-        top_docs_vec.push((name, path));
+        // Calculate combined score (search relevance + file priority)
+        let file_priority = get_file_priority(&path) as f32;
+        let combined_score = score + (file_priority / 1000.0); // Normalize priority
+        
+        scored_results.push((combined_score, name, path));
     }
+    
+    // Sort by combined score (higher is better)
+    scored_results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    
+    // Take only the top 10 results
+    let top_docs_vec: Vec<(String, String)> = scored_results
+        .into_iter()
+        .take(10)
+        .map(|(_, name, path)| (name, path))
+        .collect();
+        
     Ok(top_docs_vec)
 }
 
 #[tauri::command]
 fn open_path(path: &str) -> Result<(), String> {
+    // Update file status when opened
+    let now = Utc::now();
+    if let Ok(mut file_status_map) = FILE_STATUS.lock() {
+        let file_status = file_status_map.entry(path.to_string()).or_insert(FileStatus {
+            last_modified: now,
+            last_opened: None,
+            access_count: 0,
+            status: FileEventStatus::Normal,
+        });
+        
+        file_status.last_opened = Some(now);
+        file_status.access_count += 1;
+        if file_status.status == FileEventStatus::Normal {
+            file_status.status = FileEventStatus::Opened;
+        }
+    }
+    
     opener::open(path).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+async fn start_notify_watcher() -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("Could not get home directory")?;
+    
+    // Watch common directories
+    let watch_paths = vec![
+        home.join("Desktop"),
+        home.join("Documents"),
+        home.join("Downloads"),
+        home.join("Pictures"),
+        home.join("Music"),
+        home.join("Videos"),
+    ];
+    
+    let existing_paths: Vec<PathBuf> = watch_paths
+        .into_iter()
+        .filter(|p| p.exists())
+        .collect();
+    
+    start_file_watcher(existing_paths).await?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_file_status(path: &str) -> Result<Option<FileStatus>, String> {
+    if let Ok(file_status_map) = FILE_STATUS.lock() {
+        Ok(file_status_map.get(path).cloned())
+    } else {
+        Err("Could not access file status".to_string())
+    }
+}
+
+#[tauri::command]
+async fn manual_index_update(file_path: &str, action: &str) -> Result<(), String> {
+    let path = Path::new(file_path);
+    
+    match action {
+        "add" | "create" => {
+            add_file_to_index(path).await?;
+        },
+        "update" | "modify" => {
+            update_file_in_index(path).await?;
+        },
+        "remove" | "delete" => {
+            remove_file_from_index(path).await?;
+        },
+        _ => {
+            return Err(format!("Unknown action: {}", action));
+        }
+    }
+    
+    Ok(())
+}
+
+#[tauri::command]
+fn clear_file_status() -> Result<(), String> {
+    if let Ok(mut file_status_map) = FILE_STATUS.lock() {
+        file_status_map.clear();
+        Ok(())
+    } else {
+        Err("Could not clear file status".to_string())
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -445,7 +873,11 @@ pub fn run() {
             greet,
             search_index,
             open_path,
-            app_search
+            app_search,
+            start_notify_watcher,
+            get_file_status,
+            manual_index_update,
+            clear_file_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

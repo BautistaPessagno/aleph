@@ -123,7 +123,7 @@ function App() {
     return () => clearTimeout(timeoutId);
   }, [query, searchFiles]);
 
-  // Verificar al inicio qué índices ya están creados
+  // Verificar al inicio qué índices ya están creados e inicializar el watcher
   useEffect(() => {
     const checkInitialIndexStatus = async () => {
       await Promise.all([
@@ -132,7 +132,17 @@ function App() {
       ]);
     };
     
+    const initializeNotifyWatcher = async () => {
+      try {
+        await invoke("start_notify_watcher");
+        console.log("File watcher started successfully");
+      } catch (error) {
+        console.error("Failed to start file watcher:", error);
+      }
+    };
+    
     checkInitialIndexStatus();
+    initializeNotifyWatcher();
   }, [checkIndexStatus]);
 
   // Limpiar resultados cuando cambia el modo de búsqueda
