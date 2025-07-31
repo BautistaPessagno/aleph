@@ -1,23 +1,20 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
-//manejo de paths y archivos
+//Manejo de paths y archivos
 use jwalk::rayon::iter::{ParallelBridge, ParallelIterator};
-use std::fs::create_dir_all;
-use std::iter::Skip;
+use std::fs;
 use std::path::Path;
-use std::task;
-use std::{fs, path::PathBuf};
 //tantivy
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
-use tantivy::schema::{self, *};
-use tantivy::{doc, index, Index, IndexWriter};
-use tantivy::{ReloadPolicy, TantivyError};
+use tantivy::schema::*;
+use tantivy::TantivyError;
+use tantivy::{doc, Index, IndexWriter};
 //WalkDir
 use jwalk::{Parallelism, WalkDir};
 //opener
-use opener::{self, open, OpenError};
-//dir
+use opener;
+//Dir
 use dirs;
 //tokio
 use tokio;
@@ -98,10 +95,10 @@ async fn create_index() -> Result<(), String> {
                 }
             }
         });
-    index_writer.commit().map_err(|e| e.to_string());
+    index_writer.commit().map_err(|e| e.to_string())?;
     index_writer
         .wait_merging_threads()
-        .map_err(|e| e.to_string());
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -244,7 +241,7 @@ async fn create_app_launcher() -> Result<(), String> {
                         filename => name.as_ref(),
                         ext_f => ext.as_str(),
                     );
-                    index_writer.add_document(doc);
+                    let _ = index_writer.add_document(doc);
                 }
             }
         });
