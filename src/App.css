@@ -83,9 +83,18 @@ body {
   left: 16px;
   top: 50%;
   transform: translateY(-50%);
-  font-size: 18px;
   opacity: 0.6;
   z-index: 1;
+  color: #888;
+}
+
+.search-icon.icon {
+  width: 18px;
+  height: 18px;
+}
+
+.search-icon.icon-emoji {
+  font-size: 18px;
 }
 
 .search-input {
@@ -193,9 +202,35 @@ body {
 }
 
 .item-icon {
-  font-size: 20px;
   margin-right: 12px;
   flex-shrink: 0;
+  color: #888;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.item-icon.icon {
+  width: 20px;
+  height: 20px;
+}
+
+.item-icon.icon-emoji {
+  font-size: 20px;
+}
+
+/* General Icon component styles */
+.icon {
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+.icon-emoji {
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
+  line-height: 1;
 }
 
 .item-info {

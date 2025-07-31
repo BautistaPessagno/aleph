@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import Icon, { IconType } from "./components/Icon";
 import "./App.css";
 
 interface SearchResult {
@@ -197,20 +198,20 @@ function App() {
     return item.name;
   };
 
-  // Obtener ícono según el tipo de archivo
-  const getItemIcon = (item: SearchResult) => {
-    if (item.isApp) return "🚀";
+  // Obtener tipo de ícono según el tipo de archivo
+  const getItemIconType = (item: SearchResult): IconType => {
+    if (item.isApp) return "app";
     
     const extension = item.name.split('.').pop()?.toLowerCase();
     switch (extension) {
-      case 'txt': case 'md': case 'rtf': return "📄";
-      case 'pdf': return "📕";
-      case 'jpg': case 'jpeg': case 'png': case 'gif': case 'bmp': return "🖼️";
-      case 'mp4': case 'mov': case 'avi': case 'mkv': return "🎬";
-      case 'mp3': case 'wav': case 'flac': case 'aac': return "🎵";
-      case 'zip': case 'rar': case '7z': case 'tar': return "📦";
-      case 'js': case 'ts': case 'py': case 'java': case 'cpp': case 'c': return "💻";
-      default: return "📁";
+      case 'txt': case 'md': case 'rtf': return "text";
+      case 'pdf': return "pdf";
+      case 'jpg': case 'jpeg': case 'png': case 'gif': case 'bmp': case 'webp': case 'svg': return "image";
+      case 'mp4': case 'mov': case 'avi': case 'mkv': case 'webm': return "video";
+      case 'mp3': case 'wav': case 'flac': case 'aac': case 'ogg': return "audio";
+      case 'zip': case 'rar': case '7z': case 'tar': case 'gz': case 'bz2': return "archive";
+      case 'js': case 'ts': case 'jsx': case 'tsx': case 'py': case 'java': case 'cpp': case 'c': case 'rs': case 'go': case 'php': case 'rb': case 'swift': case 'kt': case 'dart': case 'css': case 'scss': case 'less': case 'html': case 'xml': case 'json': case 'yaml': case 'yml': return "code";
+      default: return "file";
     }
   };
 
@@ -236,7 +237,7 @@ function App() {
         </div>
 
         <div className="search-box">
-          <span className="search-icon">🔍</span>
+          <Icon type="search" size={18} className="search-icon" />
           <input
             type="text"
             value={query}
@@ -266,7 +267,7 @@ function App() {
                 onClick={() => openItem(item)}
                 onMouseEnter={() => setSelectedIndex(index)}
               >
-                <span className="item-icon">{getItemIcon(item)}</span>
+                <Icon type={getItemIconType(item)} size={20} className="item-icon" />
                 <div className="item-info">
                   <div className="item-name">{getDisplayName(item)}</div>
                   <div className="item-path">{item.path}</div>
