@@ -24,13 +24,12 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
-async fn create_index() -> Result<(), String> {
+async fn create_index(path: &str) -> Result<(), String> {
     //El index se va a guardar en ~/.cache/aleph/index
     //Si no existe el path se crea
     let home = dirs::home_dir().unwrap();
-    let idx_path = home.join(".cache/aleph/index");
+    let idx_path = home.join(".cache/aleph/index").join(path);
     let idx_path = idx_path.as_path();
-
     if !idx_path.exists() {
         fs::create_dir_all(idx_path).map_err(|e| e.to_string())?;
     }
@@ -65,7 +64,7 @@ async fn create_index() -> Result<(), String> {
     let ext_f = schema.get_field("extension").unwrap();
 
     //Vamos a indexar todo
-    let root_dir = home.join("Desktop");
+    let root_dir = home.join(path);
     let root_dir = root_dir.as_path();
 
     WalkDir::new(root_dir)
@@ -103,67 +102,112 @@ async fn create_index() -> Result<(), String> {
 }
 
 #[tauri::command]
-fn search_index(query: &str) -> Result<Vec<(String, String)>, String> {
+async fn search_index(query: &str) -> Result<Vec<(String, String)>, String> {
     //Deberia chequear si se creo el index
     let home = dirs::home_dir().unwrap();
     let idx_path = home.join(".cache/aleph/index");
     let idx_path = idx_path.as_path();
 
+    let folders = [
+        "Documents",
+        "Downloads",
+        "Pictures",
+        "Music",
+        "Movies",
+        "Library",
+        "Public",
+    ];
+
+    let search_in_index = |index: &Index, limit: usize| -> Result<Vec<(String, String)>, String> {
+        let reader = index.reader().map_err(|e| e.to_string())?;
+
+        let schema = index.schema();
+
+        let path_f = schema.get_field("path").unwrap();
+        let filename = schema.get_field("filename").unwrap();
+        let ext_f = schema.get_field("extension").unwrap();
+
+        let searcher = reader.searcher();
+
+        let mut query_parser = QueryParser::for_index(&index, vec![path_f, filename, ext_f]);
+        query_parser.set_field_fuzzy(filename, false, 2, true);
+
+        let query = query_parser.parse_query(query).map_err(|e| e.to_string())?;
+
+        let top_docs = searcher
+            .search(&query, &TopDocs::with_limit(limit))
+            .map_err(|e| e.to_string())?;
+
+        let mut top_docs_vec: Vec<(String, String)> = Vec::with_capacity(top_docs.len());
+
+        for (_score, doc_address) in top_docs {
+            let retrieved_doc: TantivyDocument =
+                searcher.doc(doc_address).map_err(|e| e.to_string())?;
+            let name = retrieved_doc
+                .get_first(filename)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_owned();
+
+            let path = retrieved_doc
+                .get_first(path_f)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_owned();
+
+            top_docs_vec.push((name, path));
+        }
+        Ok(top_docs_vec)
+    };
+
     if !idx_path.exists() {
         fs::create_dir_all(idx_path).map_err(|e| e.to_string())?;
     }
 
+    let desktop_path = idx_path.join("Desktop");
     //  Abrir o crear el índice de forma segura
-    let index = match Index::open_in_dir(idx_path) {
+    let index = match Index::open_in_dir(desktop_path) {
         Ok(idx) => idx, // lo encuentra, lo habre
         Err(_) => {
             // Índice no existe o hay otro error
             // Crear el índice y luego abrirlo
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async { create_index().await.map_err(|e| e.to_string()) })?;
+            create_index("Desktop").await.map_err(|e| e.to_string())?;
+            let idx_path = home.join(".cache/aleph/index/Desktop");
+            let idx_path = idx_path.as_path();
             Index::open_in_dir(idx_path).map_err(|e| e.to_string())?
         }
     };
 
-    let reader = index.reader().map_err(|e| e.to_string())?;
-
-    let schema = index.schema();
-
-    let path_f = schema.get_field("path").unwrap();
-    let filename = schema.get_field("filename").unwrap();
-    let ext_f = schema.get_field("extension").unwrap();
-
-    let searcher = reader.searcher();
-
-    let mut query_parser = QueryParser::for_index(&index, vec![path_f, filename, ext_f]);
-    query_parser.set_field_fuzzy(filename, false, 2, true);
-
-    let query = query_parser.parse_query(query).map_err(|e| e.to_string())?;
-
-    let top_docs = searcher
-        .search(&query, &TopDocs::with_limit(10))
-        .map_err(|e| e.to_string())?;
-
-    let mut top_docs_vec: Vec<(String, String)> = Vec::with_capacity(top_docs.len());
-
-    for (_score, doc_address) in top_docs {
-        let retrieved_doc: TantivyDocument =
-            searcher.doc(doc_address).map_err(|e| e.to_string())?;
-        let name = retrieved_doc
-            .get_first(filename)
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_owned();
-
-        let path = retrieved_doc
-            .get_first(path_f)
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_owned();
-
-        top_docs_vec.push((name, path));
+    //hacemos un for para armar los otros
+    for folder in folders {
+        let folder_idx = idx_path.join(folder);
+        match Index::open_in_dir(&folder_idx) {
+            Ok(_) => {}
+            Err(_) => {
+                let _ = tokio::spawn(async move { create_index(folder) });
+            }
+        };
     }
-    Ok(top_docs_vec)
+
+    //hacemos primero el de Desktop
+    let mut results = search_in_index(&index, 15).unwrap();
+
+    //si esta incompleto completar con los otros folders
+    if results.len() < 15 {
+        for folder in folders {
+            let folder_idx = idx_path.join(folder);
+            if folder_idx.exists() {
+                let index = Index::open_in_dir(folder_idx).unwrap();
+                let mut new_result = search_in_index(&index, 5).unwrap();
+                results.append(&mut new_result);
+                if results.len() > 15 {
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(results)
 }
 
 async fn create_app_launcher() -> Result<(), String> {
@@ -346,21 +390,14 @@ mod tests {
         //Primero me fijo de que se cree el index
         let rt = tokio::runtime::Runtime::new().unwrap();
 
-        let ans = rt.block_on(async { create_index().await });
-
-        match ans {
-            Ok(_e) => println!("el index no paniqueo"),
-            Err(e) => eprint!("hay algun error al crear el index {:?}", e),
-        }
-        assert!(
-            fs::exists("/Users/bautistapessagno/.cache/aleph/index/meta.json").unwrap_or(false)
-        );
-
         //creo bien el index, pero encuentra cosas?
-        let search = match search_index("leetcode.c") {
-            Ok(top) => top,
-            Err(e) => panic!("Error al buscar: {:?}", e),
-        };
+        let search = rt.block_on(async {
+            match search_index("leetcode.c").await {
+                Ok(top) => top,
+                Err(e) => panic!("Error al buscar: {:?}", e),
+            }
+        });
+
         //si llegamos hasta aca no hay errores, falta ver que busque bien
         // assert!(!search.is_empty());
 
