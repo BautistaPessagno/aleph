@@ -1,12 +1,16 @@
+use dirs;
 use jwalk::rayon::iter::{ParallelBridge, ParallelIterator};
+use jwalk::{Parallelism, WalkDir};
+use notify::Result as notify_Result;
+use notify::{Event, RecursiveMode, Watcher};
+
 use std::fs;
+use std::{path::Path, sync::mpsc};
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::*;
 use tantivy::TantivyError;
 use tantivy::{doc, Index, IndexWriter};
-use jwalk::{Parallelism, WalkDir};
-use dirs;
 use tokio;
 
 pub async fn create_index(path: &str) -> Result<(), String> {
@@ -117,8 +121,9 @@ pub async fn search_index(query: &str) -> Result<Vec<(String, String, f32)>, Str
             let searcher = reader.searcher();
 
             let mut query_parser = QueryParser::for_index(&index, vec![path_f, filename, ext_f]);
-            query_parser.set_field_fuzzy(filename, false, 2, true);
+            query_parser.set_field_fuzzy(filename, false, 1, true);
 
+            let query_str = &query;
             let query = query_parser.parse_query(query).map_err(|e| e.to_string())?;
 
             let top_docs = searcher
@@ -142,7 +147,9 @@ pub async fn search_index(query: &str) -> Result<Vec<(String, String, f32)>, Str
                     .unwrap_or_default()
                     .to_owned();
 
-                first_vec.push((name, path, score));
+                let better_score = calculate_contextual_score(&name, &path, score, &query_str);
+
+                first_vec.push((name, path, better_score));
             }
             let top_docs_vec: Vec<(String, String, f32)> = first_vec
                 .into_iter()
@@ -185,13 +192,13 @@ pub async fn search_index(query: &str) -> Result<Vec<(String, String, f32)>, Str
     let mut results = search_in_index(&index, 5).unwrap();
 
     // Definir el score mínimo para considerar un resultado "excelente"
-    let excellent_score_threshold = 8.0; // Ajusta este valor según tus necesidades
+    // let excellent_score_threshold = 8.0; // Ajusta este valor según tus necesidades
 
     // Encontrar el mejor score actual
-    let best_score = results
-        .iter()
-        .map(|(_, _, score)| *score)
-        .fold(0.0, f32::max);
+    // let best_score = results
+    //     .iter()
+    //     .map(|(_, _, score)| *score)
+    //     .fold(0.0, f32::max);
 
     //si esta incompleto Y no tenemos un resultado excelente, completar con los otros folders
     // if results.len() < 15 && best_score < excellent_score_threshold {
@@ -207,10 +214,10 @@ pub async fn search_index(query: &str) -> Result<Vec<(String, String, f32)>, Str
             }
 
             // Actualizar el mejor score después de agregar nuevos resultados
-            let current_best_score = results
-                .iter()
-                .map(|(_, _, score)| *score)
-                .fold(0.0, f32::max);
+            // let current_best_score = results
+            //     .iter()
+            //     .map(|(_, _, score)| *score)
+            //     .fold(0.0, f32::max);
 
             // if results.len() >= 15 || current_best_score >= excellent_score_threshold {
             // break;
@@ -223,6 +230,32 @@ pub async fn search_index(query: &str) -> Result<Vec<(String, String, f32)>, Str
     results.truncate(15);
 
     Ok(results)
+}
+
+// Nueva función para scoring contextual
+fn calculate_contextual_score(name: &str, path: &str, base_score: f32, query: &str) -> f32 {
+    let mut score = base_score;
+
+    // Boost para coincidencia exacta en el nombre
+    if name.to_lowercase().contains(&query.to_lowercase()) {
+        score *= 1.5;
+    }
+
+    // A futuro, conseguir el el ultimo uso, estoy medio verde para esas
+    // score *= get_recency_boost(path);
+
+    // Penalizar archivos en directorios muy profundos
+    let depth = path.matches('/').count();
+    if depth > 6 {
+        score *= 0.8;
+    }
+
+    // Boost para tipos de archivo comunes
+    if name.ends_with(".txt") || name.ends_with(".pdf") || name.ends_with(".doc") {
+        score *= 1.2;
+    }
+
+    score
 }
 
 #[cfg(test)]
