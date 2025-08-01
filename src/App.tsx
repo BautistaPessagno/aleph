@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
@@ -20,6 +20,7 @@ function App() {
     files: 'not_created', // 'not_created' | 'creating' | 'ready' | 'error'
     apps: 'not_created'
   });
+  const previousQueryRef = useRef("");
 
   // Detectar si el índice existe usando una búsqueda de prueba
   const checkIndexStatus = useCallback(async (indexType: 'apps' | 'files') => {
@@ -55,9 +56,10 @@ function App() {
   };
 
   // Función de búsqueda que deja que Rust maneje la creación de índices automáticamente
-  const searchFiles = useCallback(async (searchQuery: string) => {
+  const searchFiles = useCallback(async (searchQuery: string, shouldResetSelection = false) => {
     if (!searchQuery.trim()) {
       setResults([]);
+      setSelectedIndex(0);
       return;
     }
 
@@ -103,7 +105,8 @@ function App() {
           });
 
       setResults(sortedResults);
-      setSelectedIndex(0);
+      // Solo resetear selectedIndex si se solicita explícitamente o si el índice actual está fuera del rango
+      setSelectedIndex(prev => shouldResetSelection || prev >= sortedResults.length ? 0 : prev);
     } catch (error) {
       console.error("Error searching:", error);
       const indexType = searchMode === 'apps' ? 'apps' : 'files';
@@ -117,7 +120,14 @@ function App() {
   // Debounce para la búsqueda
   useEffect(() => {
     const timeoutId = setTimeout(() => {
-      searchFiles(query);
+      // Determinar si debemos resetear la selección
+      const previousQuery = previousQueryRef.current;
+      const shouldReset = !query.includes(previousQuery) || query.length < previousQuery.length;
+      
+      searchFiles(query, shouldReset);
+      
+      // Actualizar la referencia de la query anterior
+      previousQueryRef.current = query;
     }, 300);
 
     return () => clearTimeout(timeoutId);
@@ -140,6 +150,7 @@ function App() {
     setQuery("");
     setResults([]);
     setSelectedIndex(0);
+    previousQueryRef.current = "";
   }, [searchMode]);
 
   // Manejar navegación con teclado
