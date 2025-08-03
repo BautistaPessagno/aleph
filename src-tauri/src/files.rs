@@ -1,17 +1,14 @@
 use dirs;
 use jwalk::rayon::iter::{ParallelBridge, ParallelIterator};
 use jwalk::{Parallelism, WalkDir};
-use notify::Result as notify_Result;
-use notify::{Event, RecursiveMode, Watcher};
-
 use std::fs;
-use std::{path::Path, sync::mpsc};
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::*;
 use tantivy::TantivyError;
 use tantivy::{doc, Index, IndexWriter};
 use tokio;
+use crate::icons;
 
 pub async fn create_index(path: &str) -> Result<(), String> {
     //El index se va a guardar en ~/.cache/aleph/index
@@ -91,7 +88,7 @@ pub async fn create_index(path: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn search_index(query: &str) -> Result<Vec<(String, String, f32)>, String> {
+pub async fn search_index(query: &str) -> Result<Vec<(String, String, f32, Option<String>)>, String> {
     //Deberia chequear si se creo el index
     let home = dirs::home_dir().unwrap();
     let idx_path = home.join(".cache/aleph/index");
@@ -108,7 +105,7 @@ pub async fn search_index(query: &str) -> Result<Vec<(String, String, f32)>, Str
     ];
 
     let search_in_index =
-        |index: &Index, limit: usize| -> Result<Vec<(String, String, f32)>, String> {
+        |index: &Index, limit: usize| -> Result<Vec<(String, String, f32, Option<String>)>, String> {
             let reader = index.reader().map_err(|e| e.to_string())?;
 
             let min_score = 0.5;
@@ -130,7 +127,7 @@ pub async fn search_index(query: &str) -> Result<Vec<(String, String, f32)>, Str
                 .search(&query, &TopDocs::with_limit(limit))
                 .map_err(|e| e.to_string())?;
 
-            let mut first_vec: Vec<(String, String, f32)> = Vec::with_capacity(top_docs.len());
+            let mut first_vec: Vec<(String, String, f32, Option<String>)> = Vec::with_capacity(top_docs.len());
 
             for (score, doc_address) in top_docs {
                 let retrieved_doc: TantivyDocument =
@@ -147,13 +144,27 @@ pub async fn search_index(query: &str) -> Result<Vec<(String, String, f32)>, Str
                     .unwrap_or_default()
                     .to_owned();
 
+                let extension = retrieved_doc
+                    .get_first(ext_f)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+
                 let better_score = calculate_contextual_score(&name, &path, score, &query_str);
 
-                first_vec.push((name, path, better_score));
+                // Get icon for the file
+                let icon = if icons::is_executable(&path) {
+                    // If it's an app, extract app icon
+                    icons::extract_app_icon(&path)
+                } else {
+                    // Otherwise get file type icon
+                    icons::get_file_icon(&path, extension)
+                };
+
+                first_vec.push((name, path, better_score, icon));
             }
-            let top_docs_vec: Vec<(String, String, f32)> = first_vec
+            let top_docs_vec: Vec<(String, String, f32, Option<String>)> = first_vec
                 .into_iter()
-                .filter(|(_, _, score)| *score > min_score)
+                .filter(|(_, _, score, _)| *score > min_score)
                 .collect();
 
             Ok(top_docs_vec)
@@ -278,7 +289,7 @@ mod tests {
         //si llegamos hasta aca no hay errores, falta ver que busque bien
         // assert!(!search.is_empty());
 
-        assert!(search.iter().any(|(a, b, _)| *a == "leetcode.c".to_string()
+        assert!(search.iter().any(|(a, b, _, _)| *a == "leetcode.c".to_string()
             && *b == "/Users/bautistapessagno/Desktop/leetcode.c".to_string()));
     }
 }

@@ -8,6 +8,7 @@ use tantivy::{doc, Index, IndexWriter};
 use jwalk::{Parallelism, WalkDir};
 use dirs;
 use tokio;
+use crate::icons;
 
 pub async fn create_app_launcher() -> Result<(), String> {
     //El index se va a guardar en ~/.cache/aleph/index
@@ -97,7 +98,7 @@ pub async fn create_app_launcher() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn app_search(query: &str) -> Result<Vec<(String, String)>, String> {
+pub fn app_search(query: &str) -> Result<Vec<(String, String, Option<String>)>, String> {
     //Deberia chequear si se creo el index
     let home = dirs::home_dir().unwrap();
     let idx_path = home.join(".cache/aleph/apps");
@@ -138,7 +139,7 @@ pub fn app_search(query: &str) -> Result<Vec<(String, String)>, String> {
         .search(&query, &TopDocs::with_limit(10))
         .map_err(|e| e.to_string())?;
 
-    let mut top_docs_vec: Vec<(String, String)> = Vec::with_capacity(top_docs.len());
+    let mut top_docs_vec: Vec<(String, String, Option<String>)> = Vec::with_capacity(top_docs.len());
 
     for (_score, doc_address) in top_docs {
         let retrieved_doc: TantivyDocument =
@@ -155,7 +156,10 @@ pub fn app_search(query: &str) -> Result<Vec<(String, String)>, String> {
             .unwrap_or_default()
             .to_owned();
 
-        top_docs_vec.push((name, path));
+        // Extract app icon
+        let icon = icons::extract_app_icon(&path);
+
+        top_docs_vec.push((name, path, icon));
     }
     Ok(top_docs_vec)
 }
@@ -183,9 +187,8 @@ mod tests {
         //si llegamos hasta aca no hay errores, falta ver que busque bien
         assert!(!search.is_empty());
 
-        assert!(search.contains(&(
-            "Spotify.app".to_string(),
-            "/Applications/Spotify.app".to_string()
-        )));
+        assert!(search.iter().any(|(name, path, _icon)| 
+            name == "Spotify.app" && path == "/Applications/Spotify.app"
+        ));
     }
 }

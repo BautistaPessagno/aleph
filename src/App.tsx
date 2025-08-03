@@ -6,6 +6,7 @@ interface SearchResult {
   name: string;
   path: string;
   isApp?: boolean;
+  icon?: string;
 }
 
 type SearchMode = 'apps' | 'files';
@@ -27,9 +28,9 @@ function App() {
     try {
       // Intentar una búsqueda vacía para ver si el índice existe
       if (indexType === 'apps') {
-        await invoke<[string, string][]>("app_search", { query: "__test_empty__" });
+        await invoke<[string, string, string | null][]>("app_search", { query: "__test_empty__" });
       } else {
-        await invoke<[string, string][]>("search_index", { query: "__test_empty__" });
+        await invoke<[string, string, number, string | null][]>("search_index", { query: "__test_empty__" });
       }
       
       // Si llegamos aquí, el índice existe y está listo
@@ -73,26 +74,32 @@ function App() {
         setIndexingStatus(prev => ({ ...prev, [indexType]: 'creating' }));
       }
 
-      let searchResults: [string, string][] = [];
+      let formattedResults: SearchResult[] = [];
 
       if (searchMode === 'apps') {
-        searchResults = await invoke<[string, string][]>("app_search", { 
+        const searchResults = await invoke<[string, string, string | null][]>("app_search", { 
           query: searchQuery 
         });
+        formattedResults = searchResults.map(([name, path, icon]) => ({
+          name,
+          path,
+          isApp: true,
+          icon: icon || undefined
+        }));
       } else {
-        searchResults = await invoke<[string, string][]>("search_index", { 
+        const searchResults = await invoke<[string, string, number, string | null][]>("search_index", { 
           query: searchQuery 
         });
+        formattedResults = searchResults.map(([name, path, _score, icon]) => ({
+          name,
+          path,
+          isApp: isApplication(path, name),
+          icon: icon || undefined
+        }));
       }
       
       // Si llegamos aquí, el índice está listo
       setIndexingStatus(prev => ({ ...prev, [indexType]: 'ready' }));
-      
-      const formattedResults: SearchResult[] = searchResults.map(([name, path]) => ({
-        name,
-        path,
-        isApp: searchMode === 'apps' || isApplication(path, name)
-      }));
 
       // Para el modo apps, todos los resultados son apps
       // Para files, priorizar aplicaciones si las hay
@@ -210,6 +217,12 @@ function App() {
 
   // Obtener ícono según el tipo de archivo
   const getItemIcon = (item: SearchResult) => {
+    // If we have a custom icon from the backend, use it
+    if (item.icon) {
+      return <img src={item.icon} alt="icon" style={{ width: '24px', height: '24px' }} />;
+    }
+    
+    // Fallback to emoji icons
     if (item.isApp) return "🚀";
     
     const extension = item.name.split('.').pop()?.toLowerCase();
@@ -277,7 +290,7 @@ function App() {
                 onClick={() => openItem(item)}
                 onMouseEnter={() => setSelectedIndex(index)}
               >
-                <span className="item-icon">{getItemIcon(item)}</span>
+                <div className="item-icon">{getItemIcon(item)}</div>
                 <div className="item-info">
                   <div className="item-name">{getDisplayName(item)}</div>
                   <div className="item-path">{item.path}</div>

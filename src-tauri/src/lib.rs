@@ -2,6 +2,7 @@
 
 mod apps;
 mod files;
+mod icons;
 
 //opener
 use opener;
