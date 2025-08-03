@@ -1,14 +1,15 @@
+use crate::icons;
 use dirs;
 use jwalk::rayon::iter::{ParallelBridge, ParallelIterator};
 use jwalk::{Parallelism, WalkDir};
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::*;
 use tantivy::TantivyError;
 use tantivy::{doc, Index, IndexWriter};
 use tokio;
-use crate::icons;
 
 pub async fn create_index(path: &str) -> Result<(), String> {
     //El index se va a guardar en ~/.cache/aleph/index
@@ -88,7 +89,9 @@ pub async fn create_index(path: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn search_index(query: &str) -> Result<Vec<(String, String, f32, Option<String>)>, String> {
+pub async fn search_index(
+    query: &str,
+) -> Result<Vec<(String, String, f32, Option<String>)>, String> {
     //Deberia chequear si se creo el index
     let home = dirs::home_dir().unwrap();
     let idx_path = home.join(".cache/aleph/index");
@@ -104,71 +107,73 @@ pub async fn search_index(query: &str) -> Result<Vec<(String, String, f32, Optio
         "Public",
     ];
 
-    let search_in_index =
-        |index: &Index, limit: usize| -> Result<Vec<(String, String, f32, Option<String>)>, String> {
-            let reader = index.reader().map_err(|e| e.to_string())?;
+    let search_in_index = |index: &Index,
+                           limit: usize|
+     -> Result<Vec<(String, String, f32, Option<String>)>, String> {
+        let reader = index.reader().map_err(|e| e.to_string())?;
 
-            let min_score = 0.5;
-            let schema = index.schema();
+        //let min_score = 0.1;
+        let schema = index.schema();
 
-            let path_f = schema.get_field("path").unwrap();
-            let filename = schema.get_field("filename").unwrap();
-            let ext_f = schema.get_field("extension").unwrap();
+        let path_f = schema.get_field("path").unwrap();
+        let filename = schema.get_field("filename").unwrap();
+        let ext_f = schema.get_field("extension").unwrap();
 
-            let searcher = reader.searcher();
+        let searcher = reader.searcher();
 
-            let mut query_parser = QueryParser::for_index(&index, vec![path_f, filename, ext_f]);
-            query_parser.set_field_fuzzy(filename, false, 1, true);
+        let mut query_parser = QueryParser::for_index(&index, vec![path_f, filename, ext_f]);
+        query_parser.set_field_fuzzy(filename, false, 1, true);
 
-            let query_str = &query;
-            let query = query_parser.parse_query(query).map_err(|e| e.to_string())?;
+        let query_str = &query;
+        let query = query_parser.parse_query(query).map_err(|e| e.to_string())?;
 
-            let top_docs = searcher
-                .search(&query, &TopDocs::with_limit(limit))
-                .map_err(|e| e.to_string())?;
+        let top_docs = searcher
+            .search(&query, &TopDocs::with_limit(limit))
+            .map_err(|e| e.to_string())?;
 
-            let mut first_vec: Vec<(String, String, f32, Option<String>)> = Vec::with_capacity(top_docs.len());
+        let mut first_vec: Vec<(String, String, f32, Option<String>)> =
+            Vec::with_capacity(top_docs.len());
 
-            for (score, doc_address) in top_docs {
-                let retrieved_doc: TantivyDocument =
-                    searcher.doc(doc_address).map_err(|e| e.to_string())?;
-                let name = retrieved_doc
-                    .get_first(filename)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_owned();
+        for (score, doc_address) in top_docs {
+            let retrieved_doc: TantivyDocument =
+                searcher.doc(doc_address).map_err(|e| e.to_string())?;
+            let name = retrieved_doc
+                .get_first(filename)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_owned();
 
-                let path = retrieved_doc
-                    .get_first(path_f)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_owned();
+            let path = retrieved_doc
+                .get_first(path_f)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_owned();
 
-                let extension = retrieved_doc
-                    .get_first(ext_f)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
+            let extension = retrieved_doc
+                .get_first(ext_f)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
 
-                let better_score = calculate_contextual_score(&name, &path, score, &query_str);
+            let better_score = calculate_contextual_score(&name, &path, score, &query_str);
 
-                // Get icon for the file
-                let icon = if icons::is_executable(&path) {
-                    // If it's an app, extract app icon
-                    icons::extract_app_icon(&path)
-                } else {
-                    // Otherwise get file type icon
-                    icons::get_file_icon(&path, extension)
-                };
+            // Get icon for the file
+            let icon = if icons::is_executable(&path) {
+                // If it's an app, extract app icon
+                icons::extract_app_icon(&path)
+            } else {
+                // Otherwise get file type icon
+                icons::get_file_icon(&path, extension)
+            };
 
-                first_vec.push((name, path, better_score, icon));
-            }
-            let top_docs_vec: Vec<(String, String, f32, Option<String>)> = first_vec
-                .into_iter()
-                .filter(|(_, _, score, _)| *score > min_score)
-                .collect();
+            first_vec.push((name, path, better_score, icon));
+        }
+        let top_docs_vec: Vec<(String, String, f32, Option<String>)> = first_vec
+            .into_iter()
+            //.filter(|(_, _, score, _)| *score > min_score)
+            .collect();
 
-            Ok(top_docs_vec)
-        };
+        Ok(top_docs_vec)
+    };
 
     if !idx_path.exists() {
         fs::create_dir_all(idx_path).map_err(|e| e.to_string())?;
@@ -253,7 +258,8 @@ fn calculate_contextual_score(name: &str, path: &str, base_score: f32, query: &s
     }
 
     // A futuro, conseguir el el ultimo uso, estoy medio verde para esas
-    // score *= get_recency_boost(path);
+    //<1dia = 1.2; <1 semana = 1; < 1 mes = 0.8, resto 0.6
+    score *= get_recency_boost(path).unwrap();
 
     // Penalizar archivos en directorios muy profundos
     let depth = path.matches('/').count();
@@ -267,6 +273,26 @@ fn calculate_contextual_score(name: &str, path: &str, base_score: f32, query: &s
     }
 
     score
+}
+
+const HALF_LIFE_DAYS: f32 = 30.0; // ajusta a tu gusto
+const SECS_IN_DAY: f32 = 86_400.0;
+const MIN: f32 = 0.2;
+const MAX: f32 = 1.2;
+
+fn get_recency_boost(path: &str) -> Result<f32, String> {
+    let meta = fs::metadata(path).map_err(|e| e.to_string())?;
+    let last_access_time = meta.atime();
+    let half_life_secs = HALF_LIFE_DAYS * SECS_IN_DAY;
+    let now_secs = chrono::Utc::now().timestamp();
+
+    let age = (now_secs - last_access_time) as f32;
+    let base: f32 = 0.5;
+
+    let ans = base.powf(age / half_life_secs);
+
+    Ok(MIN + (MAX - MIN) * ans)
+    //ahora los criterios
 }
 
 #[cfg(test)]
@@ -289,7 +315,9 @@ mod tests {
         //si llegamos hasta aca no hay errores, falta ver que busque bien
         // assert!(!search.is_empty());
 
-        assert!(search.iter().any(|(a, b, _, _)| *a == "leetcode.c".to_string()
-            && *b == "/Users/bautistapessagno/Desktop/leetcode.c".to_string()));
+        assert!(search
+            .iter()
+            .any(|(a, b, _, _)| *a == "leetcode.c".to_string()
+                && *b == "/Users/bautistapessagno/Desktop/leetcode.c".to_string()));
     }
 }

@@ -1,14 +1,14 @@
+use crate::icons;
+use dirs;
 use jwalk::rayon::iter::{ParallelBridge, ParallelIterator};
+use jwalk::{Parallelism, WalkDir};
 use std::fs;
 use std::path::Path;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::*;
 use tantivy::{doc, Index, IndexWriter};
-use jwalk::{Parallelism, WalkDir};
-use dirs;
 use tokio;
-use crate::icons;
 
 pub async fn create_app_launcher() -> Result<(), String> {
     //El index se va a guardar en ~/.cache/aleph/index
@@ -135,11 +135,14 @@ pub fn app_search(query: &str) -> Result<Vec<(String, String, Option<String>)>, 
 
     let query = query_parser.parse_query(query).map_err(|e| e.to_string())?;
 
-    let top_docs = searcher
+    let mut top_docs = searcher
         .search(&query, &TopDocs::with_limit(10))
         .map_err(|e| e.to_string())?;
 
-    let mut top_docs_vec: Vec<(String, String, Option<String>)> = Vec::with_capacity(top_docs.len());
+    let mut top_docs_vec: Vec<(String, String, Option<String>)> =
+        Vec::with_capacity(top_docs.len());
+
+    top_docs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
     for (_score, doc_address) in top_docs {
         let retrieved_doc: TantivyDocument =
@@ -187,8 +190,9 @@ mod tests {
         //si llegamos hasta aca no hay errores, falta ver que busque bien
         assert!(!search.is_empty());
 
-        assert!(search.iter().any(|(name, path, _icon)| 
-            name == "Spotify.app" && path == "/Applications/Spotify.app"
+        assert!(search.iter().any(
+            |(name, path, _icon)| name == "Spotify.app" && path == "/Applications/Spotify.app"
         ));
     }
 }
+
