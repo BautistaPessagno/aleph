@@ -181,7 +181,7 @@ pub async fn search_index(
 
     let desktop_path = idx_path.join("Desktop");
     //  Abrir o crear el índice de forma segura
-    let index = match Index::open_in_dir(desktop_path) {
+    let index = match Index::open_in_dir(&desktop_path) {
         Ok(idx) => idx, // lo encuentra, lo habre
         Err(_) => {
             // Índice no existe o hay otro error
@@ -193,15 +193,28 @@ pub async fn search_index(
         }
     };
 
+    let destkop_dir = dirs::desktop_dir().unwrap();
+
+    tokio::spawn(async move {
+        async_watch(destkop_dir).await;
+    });
+
+    let folders_dir = dirs::home_dir().unwrap();
+
     //hacemos un for para armar los otros
     for folder in folders {
         let folder_idx = idx_path.join(folder);
         match Index::open_in_dir(&folder_idx) {
             Ok(_) => {}
             Err(_) => {
-                let _ = tokio::spawn(async move { create_index(folder).await });
+                let _ = tokio::spawn(async move {
+                    create_index(folder).await.unwrap();
+                    async_watch(folder_idx.as_path()).await
+                });
             }
         };
+        let folder_dir = folders_dir.join(folder);
+        tokio::spawn(async move { async_watch(folder_dir).await });
     }
 
     //hacemos primero el de Desktop
@@ -239,6 +252,7 @@ pub async fn search_index(
             // break;
             // }
         }
+
         // }
     }
 
@@ -320,4 +334,56 @@ mod tests {
             .any(|(a, b, _, _)| *a == "leetcode.c".to_string()
                 && *b == "/Users/bautistapessagno/Desktop/leetcode.c".to_string()));
     }
+}
+
+use futures::{
+    channel::mpsc::{channel, Receiver},
+    SinkExt, StreamExt,
+};
+use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
+use std::path::Path;
+
+// watcher para updates de cambios en los directorios
+fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Result<Event>>)> {
+    let (mut tx, rx) = channel(100);
+
+    // Automatically select the best implementation for your platform.
+    // You can also access each implementation directly e.g. INotifyWatcher.
+    let watcher = RecommendedWatcher::new(
+        move |res| {
+            futures::executor::block_on(async {
+                tx.send(res).await.unwrap();
+            })
+        },
+        Config::default(),
+    )?;
+
+    Ok((watcher, rx))
+}
+
+async fn async_watch<P: AsRef<Path>>(path: P) -> notify::Result<()> {
+    let (mut watcher, mut rx) = async_watcher()?;
+
+    if !path.as_ref().exists() {
+        println!("❌ El path no existe: {:?}", path.as_ref());
+        return Err(notify::Error::new(notify::ErrorKind::PathNotFound));
+    }
+
+    // Add a path to be watched. All files and directories at that path and
+    // below will be monitored for changes.
+    watcher.watch(path.as_ref(), RecursiveMode::Recursive)?;
+
+    while let Some(res) = rx.next().await {
+        match res {
+            Ok(event) => {
+                if event.kind.is_create() || event.kind.is_remove() {
+                    println!("changed: {:?}", event)
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            }
+            Err(e) => println!("watch error: {:?}", e),
+        }
+    }
+
+    Ok(())
 }
