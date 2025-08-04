@@ -365,3 +365,128 @@ body {
 .loading .spinner {
   margin-bottom: 8px;
 }
+
+/* LLM Interface Styles */
+.llm-container {
+  margin-top: 20px;
+}
+
+.llm-response {
+  background: #2d2d2d;
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 20px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+  animation: slideIn 0.3s ease-out;
+}
+
+.llm-response-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #3d3d3d;
+}
+
+.llm-icon {
+  font-size: 20px;
+}
+
+.llm-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #007aff;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.llm-response-content {
+  line-height: 1.6;
+  color: #ffffff;
+}
+
+.llm-response-content p {
+  margin-bottom: 12px;
+}
+
+.llm-response-content p:last-child {
+  margin-bottom: 0;
+}
+
+.llm-history {
+  background: #252525;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 5px 20px rgba(0, 0, 0, 0.2);
+}
+
+.llm-history-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #3d3d3d;
+}
+
+.history-icon {
+  font-size: 16px;
+}
+
+.history-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #888888;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.llm-history-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.history-item {
+  background: #2d2d2d;
+  border-radius: 8px;
+  padding: 12px;
+  font-size: 13px;
+}
+
+.history-query {
+  color: #007aff;
+  margin-bottom: 6px;
+}
+
+.history-response {
+  color: #cccccc;
+}
+
+.llm-prompt {
+  text-align: center;
+  padding: 30px 20px;
+  background: #252525;
+  border-radius: 12px;
+  border: 2px dashed #3d3d3d;
+  margin-top: 20px;
+}
+
+.llm-prompt-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.llm-prompt-content .llm-icon {
+  font-size: 32px;
+  opacity: 0.6;
+}
+
+.llm-prompt-content p {
+  color: #888888;
+  font-size: 14px;
+  margin: 0;
+}

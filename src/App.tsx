@@ -9,7 +9,7 @@ interface SearchResult {
   icon?: string;
 }
 
-type SearchMode = 'apps' | 'files';
+type SearchMode = 'apps' | 'files' | 'llm';
 
 function App() {
   const [query, setQuery] = useState("");
@@ -21,6 +21,8 @@ function App() {
     files: 'not_created', // 'not_created' | 'creating' | 'ready' | 'error'
     apps: 'not_created'
   });
+  const [llmResponse, setLlmResponse] = useState("");
+  const [llmHistory, setLlmHistory] = useState<Array<{query: string, response: string}>>([]);
   const previousQueryRef = useRef("");
 
   // Detectar si el índice existe usando una búsqueda de prueba
@@ -56,11 +58,42 @@ function App() {
     return executableExtensions.some(ext => lowerName.endsWith(ext));
   };
 
+  // Función para manejar consultas LLM
+  const handleLlmQuery = useCallback(async (searchQuery: string) => {
+    if (!searchQuery.trim()) {
+      setLlmResponse("");
+      return;
+    }
+
+    try {
+      setIsLoading(true);
+      const response = await invoke<string>("llms", { query: searchQuery });
+      setLlmResponse(response);
+      
+      // Agregar al historial
+      setLlmHistory(prev => [...prev, { query: searchQuery, response }]);
+    } catch (error) {
+      console.error("Error with LLM:", error);
+      setLlmResponse("Error: No se pudo obtener respuesta del LLM");
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
   // Función de búsqueda que deja que Rust maneje la creación de índices automáticamente
   const searchFiles = useCallback(async (searchQuery: string, shouldResetSelection = false) => {
     if (!searchQuery.trim()) {
       setResults([]);
       setSelectedIndex(0);
+      if (searchMode === 'llm') {
+        setLlmResponse("");
+      }
+      return;
+    }
+
+    // Si está en modo LLM, usar la función específica
+    if (searchMode === 'llm') {
+      await handleLlmQuery(searchQuery);
       return;
     }
 
@@ -122,10 +155,12 @@ function App() {
     } finally {
       setIsLoading(false);
     }
-  }, [searchMode, indexingStatus]);
+  }, [searchMode, indexingStatus, handleLlmQuery]);
 
-  // Debounce para la búsqueda
+  // Debounce para la búsqueda (solo para apps y files, no para LLM)
   useEffect(() => {
+    if (searchMode === 'llm') return;
+    
     const timeoutId = setTimeout(() => {
       // Determinar si debemos resetear la selección
       const previousQuery = previousQueryRef.current;
@@ -138,7 +173,7 @@ function App() {
     }, 300);
 
     return () => clearTimeout(timeoutId);
-  }, [query, searchFiles]);
+  }, [query, searchFiles, searchMode]);
 
   // Verificar al inicio qué índices ya están creados
   useEffect(() => {
@@ -157,22 +192,23 @@ function App() {
     setQuery("");
     setResults([]);
     setSelectedIndex(0);
+    setLlmResponse("");
     previousQueryRef.current = "";
   }, [searchMode]);
 
   // Manejar navegación con teclado
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (results.length === 0) return;
-
       switch (e.key) {
         case 'ArrowDown':
+          if (results.length === 0 || searchMode === 'llm') return;
           e.preventDefault();
           setSelectedIndex(prev => 
             prev < results.length - 1 ? prev + 1 : 0
           );
           break;
         case 'ArrowUp':
+          if (results.length === 0 || searchMode === 'llm') return;
           e.preventDefault();
           setSelectedIndex(prev => 
             prev > 0 ? prev - 1 : results.length - 1
@@ -180,20 +216,26 @@ function App() {
           break;
         case 'Enter':
           e.preventDefault();
-          if (results[selectedIndex]) {
+          if (searchMode === 'llm') {
+            // En modo LLM, enviar la consulta manualmente
+            if (query.trim()) {
+              handleLlmQuery(query);
+            }
+          } else if (results[selectedIndex]) {
             openItem(results[selectedIndex]);
           }
           break;
         case 'Escape':
           setQuery("");
           setResults([]);
+          setLlmResponse("");
           break;
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [results, selectedIndex]);
+  }, [results, selectedIndex, searchMode, query, handleLlmQuery]);
 
   // Función para abrir archivo/aplicación
   const openItem = async (item: SearchResult) => {
@@ -257,6 +299,12 @@ function App() {
             📁 Files
             {indexingStatus.files === 'creating' && <span className="indexing-indicator">⚡</span>}
           </button>
+          <button
+            className={`mode-button ${searchMode === 'llm' ? 'active' : ''}`}
+            onClick={() => setSearchMode('llm')}
+          >
+            🤖 LLM
+          </button>
         </div>
 
         <div className="search-box">
@@ -268,7 +316,9 @@ function App() {
             placeholder={
               searchMode === 'apps' 
                 ? (indexingStatus.apps === 'creating' ? "Creating app index..." : "Search applications...")
-                : (indexingStatus.files === 'creating' ? "Creating file index..." : "Search files...")
+                : searchMode === 'files'
+                ? (indexingStatus.files === 'creating' ? "Creating file index..." : "Search files...")
+                : "Ask the AI assistant..."
             }
             className="search-input"
             autoFocus
@@ -281,7 +331,7 @@ function App() {
           </div>
         )}
 
-        {results.length > 0 && (
+        {searchMode !== 'llm' && results.length > 0 && (
           <div className="results-container">
             {results.map((item, index) => (
               <div
@@ -301,7 +351,47 @@ function App() {
           </div>
         )}
 
-        {query && !isLoading && results.length === 0 && (
+        {searchMode === 'llm' && (
+          <div className="llm-container">
+            {llmResponse && (
+              <div className="llm-response">
+                <div className="llm-response-header">
+                  <span className="llm-icon">🤖</span>
+                  <span className="llm-label">AI Response</span>
+                </div>
+                <div className="llm-response-content">
+                  {llmResponse.split('\n').map((line, index) => (
+                    <p key={index}>{line}</p>
+                  ))}
+                </div>
+              </div>
+            )}
+            
+            {llmHistory.length > 0 && (
+              <div className="llm-history">
+                <div className="llm-history-header">
+                  <span className="history-icon">📚</span>
+                  <span className="history-label">Previous Conversations</span>
+                </div>
+                <div className="llm-history-content">
+                  {llmHistory.slice(-3).reverse().map((item, index) => (
+                    <div key={index} className="history-item">
+                      <div className="history-query">
+                        <strong>Q:</strong> {item.query}
+                      </div>
+                      <div className="history-response">
+                        <strong>A:</strong> {item.response.substring(0, 100)}
+                        {item.response.length > 100 && '...'}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {query && !isLoading && results.length === 0 && searchMode !== 'llm' && (
           <div className="no-results">
             <p>No results found for "{query}"</p>
             {(
@@ -319,10 +409,24 @@ function App() {
             )}
           </div>
         )}
+
+        {searchMode === 'llm' && !isLoading && !llmResponse && query && (
+          <div className="llm-prompt">
+            <div className="llm-prompt-content">
+              <span className="llm-icon">🤖</span>
+              <p>Press Enter to send your question to the AI assistant</p>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="help-text">
-        <p>Type to search • ↑↓ to navigate • Enter to open • Esc to clear</p>
+        <p>
+          {searchMode === 'llm' 
+            ? "Type your question • Enter to send • Esc to clear"
+            : "Type to search • ↑↓ to navigate • Enter to open • Esc to clear"
+          }
+        </p>
         <div className="indexing-status">
           <span className={`status-badge ${
             indexingStatus.apps === 'ready' ? 'ready' : 
