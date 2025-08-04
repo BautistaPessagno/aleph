@@ -3,6 +3,7 @@
 mod apps;
 mod files;
 mod icons;
+mod llm;
 
 //opener
 use opener;
@@ -26,7 +27,8 @@ pub fn run() {
             greet,
             files::search_index,
             open_path,
-            apps::app_search
+            apps::app_search,
+            llm::llms
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
