@@ -283,175 +283,211 @@ function App() {
   return (
     <div className="app">
       <div className="search-container">
-        {/* Mode Selector */}
-        <div className="mode-selector">
-          <button
-            className={`mode-button ${searchMode === 'apps' ? 'active' : ''}`}
-            onClick={() => setSearchMode('apps')}
-          >
-            🚀 Apps
-            {indexingStatus.apps === 'creating' && <span className="indexing-indicator">⚡</span>}
-          </button>
-          <button
-            className={`mode-button ${searchMode === 'files' ? 'active' : ''}`}
-            onClick={() => setSearchMode('files')}
-          >
-            📁 Files
-            {indexingStatus.files === 'creating' && <span className="indexing-indicator">⚡</span>}
-          </button>
-          <button
-            className={`mode-button ${searchMode === 'llm' ? 'active' : ''}`}
-            onClick={() => setSearchMode('llm')}
-          >
-            🤖 LLM
-          </button>
-        </div>
-
-        <div className="search-box">
-          <span className="search-icon">🔍</span>
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={
-              searchMode === 'apps' 
-                ? (indexingStatus.apps === 'creating' ? "Creating app index..." : "Search applications...")
-                : searchMode === 'files'
-                ? (indexingStatus.files === 'creating' ? "Creating file index..." : "Search files...")
-                : "Ask the AI assistant..."
-            }
-            className="search-input"
-            autoFocus
-          />
-        </div>
-        
-        {isLoading && query && (
-          <div className="loading-indicator">
-            <div className="spinner small"></div>
+        <div className="search-header">
+          {/* Mode Selector */}
+          <div className="mode-selector">
+            <button
+              className={`mode-button ${searchMode === 'apps' ? 'active' : ''}`}
+              onClick={() => setSearchMode('apps')}
+            >
+              🚀 Apps
+              {indexingStatus.apps === 'creating' && <span className="indexing-indicator">⚡</span>}
+            </button>
+            <button
+              className={`mode-button ${searchMode === 'files' ? 'active' : ''}`}
+              onClick={() => setSearchMode('files')}
+            >
+              📁 Files
+              {indexingStatus.files === 'creating' && <span className="indexing-indicator">⚡</span>}
+            </button>
+            <button
+              className={`mode-button ${searchMode === 'llm' ? 'active' : ''}`}
+              onClick={() => setSearchMode('llm')}
+            >
+              🤖 LLM
+            </button>
           </div>
-        )}
 
-        {searchMode !== 'llm' && results.length > 0 && (
-          <div className="results-container">
-            {results.map((item, index) => (
-              <div
-                key={`${item.path}-${index}`}
-                className={`result-item ${index === selectedIndex ? 'selected' : ''}`}
-                onClick={() => openItem(item)}
-                onMouseEnter={() => setSelectedIndex(index)}
-              >
-                <div className="item-icon">{getItemIcon(item)}</div>
-                <div className="item-info">
-                  <div className="item-name">{getDisplayName(item)}</div>
-                  <div className="item-path">{item.path}</div>
-                </div>
-                {item.isApp && <span className="app-badge">APP</span>}
-              </div>
-            ))}
+          <div className="search-box">
+            <span className="search-icon">🔍</span>
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={
+                searchMode === 'apps' 
+                  ? (indexingStatus.apps === 'creating' ? "Creating app index..." : "Search applications...")
+                  : searchMode === 'files'
+                  ? (indexingStatus.files === 'creating' ? "Creating file index..." : "Search files...")
+                  : "Ask the AI assistant..."
+              }
+              className="search-input"
+              autoFocus
+            />
           </div>
-        )}
-
-        {searchMode === 'llm' && (
-          <div className="llm-container">
-            {llmResponse && (
-              <div className="llm-response">
-                <div className="llm-response-header">
-                  <span className="llm-icon">🤖</span>
-                  <span className="llm-label">AI Response</span>
-                </div>
-                <div className="llm-response-content">
-                  {llmResponse.split('\n').map((line, index) => (
-                    <p key={index}>{line}</p>
-                  ))}
-                </div>
-              </div>
-            )}
-            
-            {llmHistory.length > 0 && (
-              <div className="llm-history">
-                <div className="llm-history-header">
-                  <span className="history-icon">📚</span>
-                  <span className="history-label">Previous Conversations</span>
-                </div>
-                <div className="llm-history-content">
-                  {llmHistory.slice(-3).reverse().map((item, index) => (
-                    <div key={index} className="history-item">
-                      <div className="history-query">
-                        <strong>Q:</strong> {item.query}
-                      </div>
-                      <div className="history-response">
-                        <strong>A:</strong> {item.response.substring(0, 100)}
-                        {item.response.length > 100 && '...'}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {query && !isLoading && results.length === 0 && searchMode !== 'llm' && (
-          <div className="no-results">
-            <p>No results found for "{query}"</p>
-            {(
-              (searchMode === 'apps' && indexingStatus.apps === 'not_created') ||
-              (searchMode === 'files' && indexingStatus.files === 'not_created')
-            ) && (
-              <div className="indexing-hints">
-                <p className="lazy-hint">
-                  {searchMode === 'files' 
-                    ? "File index will be created automatically on first search"
-                    : "App index will be created automatically on first search"
-                  }
-                </p>
-              </div>
-            )}
-          </div>
-        )}
-
-        {searchMode === 'llm' && !isLoading && !llmResponse && query && (
-          <div className="llm-prompt">
-            <div className="llm-prompt-content">
-              <span className="llm-icon">🤖</span>
-              <p>Press Enter to send your question to the AI assistant</p>
+          
+          {isLoading && query && (
+            <div className="loading-indicator">
+              <div className="spinner small"></div>
             </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
 
-      <div className="help-text">
-        <p>
-          {searchMode === 'llm' 
-            ? "Type your question • Enter to send • Esc to clear"
-            : "Type to search • ↑↓ to navigate • Enter to open • Esc to clear"
-          }
-        </p>
-        <div className="indexing-status">
-          <span className={`status-badge ${
-            indexingStatus.apps === 'ready' ? 'ready' : 
-            indexingStatus.apps === 'creating' ? 'indexing' : 
-            'not-created'
-          }`}>
-            🚀 Apps: {
-              indexingStatus.apps === 'ready' ? 'Ready' :
-              indexingStatus.apps === 'creating' ? 'Creating...' :
-              indexingStatus.apps === 'error' ? 'Error' :
-              'Not Created'
+        <div className="search-content">
+          {searchMode !== 'llm' && results.length > 0 && (
+            <div className="results-container">
+              {results.map((item, index) => (
+                <div
+                  key={`${item.path}-${index}`}
+                  className={`result-item ${index === selectedIndex ? 'selected' : ''}`}
+                  onClick={() => openItem(item)}
+                  onMouseEnter={() => setSelectedIndex(index)}
+                >
+                  <div className="item-icon">{getItemIcon(item)}</div>
+                  <div className="item-info">
+                    <div className="item-name">{getDisplayName(item)}</div>
+                    <div className="item-path">{item.path}</div>
+                  </div>
+                  {item.isApp && <span className="app-badge">APP</span>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {searchMode === 'llm' && (
+            <div className="llm-container">
+              {isLoading && query && (
+                <div className="llm-loading">
+                  <div className="llm-loading-content">
+                    <div className="typing-indicator">
+                      <div className="typing-dot"></div>
+                      <div className="typing-dot"></div>
+                      <div className="typing-dot"></div>
+                    </div>
+                    <p className="llm-loading-text">AI is thinking...</p>
+                  </div>
+                </div>
+              )}
+
+              {llmResponse && !isLoading && (
+                <div className="llm-response">
+                  <div className="llm-response-header">
+                    <span className="llm-icon">🤖</span>
+                    <span className="llm-label">AI Response</span>
+                    <button 
+                      className="clear-response-button"
+                      onClick={() => {
+                        setLlmResponse("");
+                        setQuery("");
+                      }}
+                      title="Clear response"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div className="llm-response-content">
+                    {llmResponse.split('\n').map((line, index) => (
+                      <p key={index}>{line}</p>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {llmHistory.length > 0 && !llmResponse && !isLoading && (
+                <div className="llm-history">
+                  <div className="llm-history-header">
+                    <span className="history-icon">📚</span>
+                    <span className="history-label">Previous Conversations</span>
+                  </div>
+                  <div className="llm-history-content">
+                    {llmHistory.slice(-3).reverse().map((item, index) => (
+                      <div key={index} className="history-item">
+                        <div className="history-query">
+                          <strong>Q:</strong> {item.query}
+                        </div>
+                        <div className="history-response">
+                          <strong>A:</strong> {item.response.substring(0, 100)}
+                          {item.response.length > 100 && '...'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {!isLoading && !llmResponse && query && (
+                <div className="llm-prompt">
+                  <div className="llm-prompt-content">
+                    <span className="llm-icon">🤖</span>
+                    <p>Press Enter to send your question to the AI assistant</p>
+                  </div>
+                </div>
+              )}
+
+              {!isLoading && !llmResponse && !query && llmHistory.length === 0 && (
+                <div className="llm-prompt">
+                  <div className="llm-prompt-content">
+                    <span className="llm-icon">🤖</span>
+                    <p>Start typing to ask the AI assistant anything</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {query && !isLoading && results.length === 0 && searchMode !== 'llm' && (
+            <div className="no-results">
+              <p>No results found for "{query}"</p>
+              {(
+                (searchMode === 'apps' && indexingStatus.apps === 'not_created') ||
+                (searchMode === 'files' && indexingStatus.files === 'not_created')
+              ) && (
+                <div className="indexing-hints">
+                  <p className="lazy-hint">
+                    {searchMode === 'files' 
+                      ? "File index will be created automatically on first search"
+                      : "App index will be created automatically on first search"
+                    }
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="help-text">
+          <p>
+            {searchMode === 'llm' 
+              ? "Type your question • Enter to send • Esc to clear"
+              : "Type to search • ↑↓ to navigate • Enter to open • Esc to clear"
             }
-          </span>
-          <span className={`status-badge ${
-            indexingStatus.files === 'ready' ? 'ready' : 
-            indexingStatus.files === 'creating' ? 'indexing' : 
-            'not-created'
-          }`}>
-            📁 Files: {
-              indexingStatus.files === 'ready' ? 'Ready' :
-              indexingStatus.files === 'creating' ? 'Creating...' :
-              indexingStatus.files === 'error' ? 'Error' :
-              'Not Created'
-            }
-          </span>
+          </p>
+          <div className="indexing-status">
+            <span className={`status-badge ${
+              indexingStatus.apps === 'ready' ? 'ready' : 
+              indexingStatus.apps === 'creating' ? 'indexing' : 
+              'not-created'
+            }`}>
+              🚀 Apps: {
+                indexingStatus.apps === 'ready' ? 'Ready' :
+                indexingStatus.apps === 'creating' ? 'Creating...' :
+                indexingStatus.apps === 'error' ? 'Error' :
+                'Not Created'
+              }
+            </span>
+            <span className={`status-badge ${
+              indexingStatus.files === 'ready' ? 'ready' : 
+              indexingStatus.files === 'creating' ? 'indexing' : 
+              'not-created'
+            }`}>
+              📁 Files: {
+                indexingStatus.files === 'ready' ? 'Ready' :
+                indexingStatus.files === 'creating' ? 'Creating...' :
+                indexingStatus.files === 'error' ? 'Error' :
+                'Not Created'
+              }
+            </span>
+          </div>
         </div>
       </div>
     </div>

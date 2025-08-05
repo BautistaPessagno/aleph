@@ -195,10 +195,10 @@ pub async fn search_index(
 
     let destkop_dir = dirs::desktop_dir().unwrap();
 
-    tokio::spawn(async move {
-        async_watch(destkop_dir).await;
-    });
-
+    // tokio::spawn(async move {
+    //     async_watch(destkop_dir).await;
+    // });
+    //
     let folders_dir = dirs::home_dir().unwrap();
 
     //hacemos un for para armar los otros
@@ -213,8 +213,8 @@ pub async fn search_index(
                 });
             }
         };
-        let folder_dir = folders_dir.join(folder);
-        tokio::spawn(async move { async_watch(folder_dir).await });
+        // let folder_dir = folders_dir.join(folder);
+        // tokio::spawn(async move { async_watch(folder_dir).await });
     }
 
     //hacemos primero el de Desktop
@@ -385,5 +385,9 @@ async fn async_watch<P: AsRef<Path>>(path: P) -> notify::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn add_to_index(path: &str) -> Result<(), String> {
     Ok(())
 }
