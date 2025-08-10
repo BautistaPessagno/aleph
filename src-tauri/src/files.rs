@@ -4,9 +4,14 @@ use jwalk::rayon::iter::{ParallelBridge, ParallelIterator};
 use jwalk::{Parallelism, WalkDir};
 use std::fs;
 use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::*;
+use tantivy::Term;
 use tantivy::TantivyError;
 use tantivy::{doc, Index, IndexWriter};
 use tokio;
@@ -111,6 +116,8 @@ pub async fn search_index(
                            limit: usize|
      -> Result<Vec<(String, String, f32, Option<String>)>, String> {
         let reader = index.reader().map_err(|e| e.to_string())?;
+        // Ensure reader reflects the most recent commits (deletes/adds)
+        reader.reload().map_err(|e| e.to_string())?;
 
         //let min_score = 0.1;
         let schema = index.schema();
@@ -148,6 +155,12 @@ pub async fn search_index(
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_owned();
+
+            // Drop stale entries that no longer exist on disk and eagerly clean the index
+            if !std::path::Path::new(&path).exists() {
+                let _ = delete_from_index(std::path::Path::new(&path));
+                continue;
+            }
 
             let extension = retrieved_doc
                 .get_first(ext_f)
@@ -195,26 +208,32 @@ pub async fn search_index(
 
     let destkop_dir = dirs::desktop_dir().unwrap();
 
-    // tokio::spawn(async move {
-    //     async_watch(destkop_dir).await;
-    // });
-    //
-    let folders_dir = dirs::home_dir().unwrap();
+    // Iniciar watchers una sola vez por ejecución
+    static STARTED_WATCHERS: AtomicBool = AtomicBool::new(false);
+    if !STARTED_WATCHERS.swap(true, Ordering::SeqCst) {
+        // Desktop
+        let desktop_watch = destkop_dir.clone();
+        let _ = tokio::spawn(async move { let _ = async_watch(desktop_watch).await; });
 
-    //hacemos un for para armar los otros
+        // Otros folders del Home
+        let folders_dir = dirs::home_dir().unwrap();
+        for folder in folders {
+            let folder_dir = folders_dir.join(folder);
+            let _ = tokio::spawn(async move { let _ = async_watch(folder_dir).await; });
+        }
+    }
+    //hacemos un for para armar los otros índices si faltan
     for folder in folders {
         let folder_idx = idx_path.join(folder);
         match Index::open_in_dir(&folder_idx) {
             Ok(_) => {}
             Err(_) => {
                 let _ = tokio::spawn(async move {
-                    create_index(folder).await.unwrap();
-                    async_watch(folder_idx.as_path()).await
+                    // Creamos el índice en background (el watcher ya está mirando el FS)
+                    let _ = create_index(folder).await;
                 });
             }
         };
-        // let folder_dir = folders_dir.join(folder);
-        // tokio::spawn(async move { async_watch(folder_dir).await });
     }
 
     //hacemos primero el de Desktop
@@ -271,9 +290,9 @@ fn calculate_contextual_score(name: &str, path: &str, base_score: f32, query: &s
         score *= 1.5;
     }
 
-    // A futuro, conseguir el el ultimo uso, estoy medio verde para esas
-    //<1dia = 1.2; <1 semana = 1; < 1 mes = 0.8, resto 0.6
-    score *= get_recency_boost(path).unwrap();
+    // A futuro, conseguir el el ultimo uso
+    // Si falla (archivo borrado o sin metadata), no penalizamos
+    score *= get_recency_boost(path).unwrap_or(1.0);
 
     // Penalizar archivos en directorios muy profundos
     let depth = path.matches('/').count();
@@ -341,7 +360,7 @@ use futures::{
     SinkExt, StreamExt,
 };
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
-use std::path::Path;
+use notify::event::{EventKind, RemoveKind, CreateKind};
 
 // watcher para updates de cambios en los directorios
 fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Result<Event>>)> {
@@ -373,12 +392,55 @@ async fn async_watch<P: AsRef<Path>>(path: P) -> notify::Result<()> {
     // below will be monitored for changes.
     watcher.watch(path.as_ref(), RecursiveMode::Recursive)?;
 
+    // Desduplicación global (path + tipo de evento) por una ventana corta
+    static DEDUP_CACHE: OnceLock<Mutex<std::collections::HashMap<String, Instant>>> = OnceLock::new();
+    const DEDUP_TTL: Duration = Duration::from_millis(500);
+
     while let Some(res) = rx.next().await {
         match res {
             Ok(event) => {
                 if event.kind.is_create() || event.kind.is_remove() {
-                    println!("changed: {:?}", event)
+                    for changed_path in event.paths {
+                        if changed_path.is_file() || event.kind.is_remove() {
+                            // Clave de desduplicación
+                            let key = format!(
+                                "{}|{}",
+                                changed_path.display(),
+                                if event.kind.is_create() { "create" } else { "remove" }
+                            );
+
+                            let cache = DEDUP_CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+                            let mut map = cache.lock().unwrap();
+                            let now = Instant::now();
+
+                            // Limpieza de entradas viejas (lazy)
+                            map.retain(|_, t| now.duration_since(*t) <= DEDUP_TTL);
+
+                            // Si lo vimos hace muy poco, saltamos
+                            let seen_recently = map.get(&key).map(|t| now.duration_since(*t) <= DEDUP_TTL).unwrap_or(false);
+                            if seen_recently {
+                                continue;
+                            }
+                            map.insert(key, now);
+
+                            match &event.kind {
+                                EventKind::Create(CreateKind::File) => {
+                                    if let Err(e) = add_to_index(&changed_path) {
+                                        println!("Error adding to index: {}", e);
+                                    }
+                                }
+                                // Handle any kind of remove event (file or generic)
+                                EventKind::Remove(_) => {
+                                    if let Err(e) = delete_from_index(&changed_path) {
+                                        println!("Error deleting from index: {}", e);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                 }
+                // Pequeño debounce
                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             }
             Err(e) => println!("watch error: {:?}", e),
@@ -388,6 +450,153 @@ async fn async_watch<P: AsRef<Path>>(path: P) -> notify::Result<()> {
     Ok(())
 }
 
-fn add_to_index(path: &str) -> Result<(), String> {
+fn add_to_index(file_path: &Path) -> Result<(), String> {
+    // Determinar a qué índice pertenece
+    let (_folder_name, idx_dir) = match infer_folder_and_index_dir(file_path) {
+        Some(v) => v,
+        None => return Ok(()),
+    };
+
+    let (index, path_f, filename_f, ext_f) = open_or_create_index(&idx_dir)?;
+
+    let mut writer: IndexWriter = index
+        .writer_with_num_threads(2, 50_000_000)
+        .map_err(|e| e.to_string())?;
+
+    let absolute_path = if file_path.is_absolute() {
+        file_path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap().join(file_path)
+    };
+
+    let path_str = absolute_path.display().to_string();
+    let name = absolute_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    let ext = absolute_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    let document = doc!(
+        path_f => path_str,
+        filename_f => name,
+        ext_f => ext.as_str(),
+    );
+    writer.add_document(document).map_err(|e| e.to_string())?;
+    writer.commit().map_err(|e| e.to_string())?;
+    writer
+        .wait_merging_threads()
+        .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn delete_from_index(file_path: &Path) -> Result<(), String> {
+    let (_, idx_dir) = match infer_folder_and_index_dir(file_path) {
+        Some(v) => v,
+        None => return Ok(()),
+    };
+
+    let (index, path_f, _filename_f, _ext_f) = open_or_create_index(&idx_dir)?;
+    let mut writer: IndexWriter = index
+        .writer_with_num_threads(2, 50_000_000)
+        .map_err(|e| e.to_string())?;
+
+    let absolute_path = if file_path.is_absolute() {
+        file_path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap().join(file_path)
+    };
+
+    // Canonicalizar para evitar diferencias de representación del path
+    let path_str = absolute_path.display().to_string();
+    // Borrar el documento exacto
+    let term = Term::from_field_text(path_f, &path_str);
+    writer.delete_term(term);
+
+    // Nota: si se elimina un directorio, este borrado exacto no elimina hijos.
+    // Podemos ampliar luego a borrar por prefijo usando una query compatible con la versión de Tantivy.
+    writer.commit().map_err(|e| e.to_string())?;
+    writer
+        .wait_merging_threads()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn infer_folder_and_index_dir(file_path: &Path) -> Option<(String, PathBuf)> {
+    let home = dirs::home_dir()?;
+
+    // Construir pares (nombre_visible, ruta_absoluta)
+    let mut candidates: Vec<(String, PathBuf)> = Vec::new();
+    if let Some(desktop_dir) = dirs::desktop_dir() {
+        candidates.push(("Desktop".to_string(), desktop_dir));
+    }
+    for name in [
+        "Documents",
+        "Downloads",
+        "Pictures",
+        "Music",
+        "Movies",
+        "Library",
+        "Public",
+    ] {
+        candidates.push((name.to_string(), home.join(name)));
+    }
+
+    // Buscar el primer candidato cuyo path sea prefijo del file_path
+    for (display, abs_dir) in candidates {
+        if file_path.starts_with(&abs_dir) {
+            let idx_dir = home.join(".cache/aleph/index").join(&display);
+            return Some((display, idx_dir));
+        }
+    }
+
+    None
+}
+
+#[allow(dead_code)]
+fn watched_folders() -> Vec<&'static str> {
+    vec![
+        "Documents",
+        "Downloads",
+        "Pictures",
+        "Music",
+        "Movies",
+        "Library",
+        "Public",
+    ]
+}
+
+fn open_or_create_index(idx_dir: &Path) -> Result<(Index, Field, Field, Field), String> {
+    if !idx_dir.exists() {
+        fs::create_dir_all(idx_dir).map_err(|e| e.to_string())?;
+    }
+
+    // Definir el mismo schema que en create_index
+    let mut schema_builder = Schema::builder();
+    let _ = schema_builder.add_text_field("path", STORED | STRING);
+    let _ = schema_builder.add_text_field("filename", TEXT | STORED);
+    let _ = schema_builder.add_text_field("extension", STRING | STORED);
+    let schema = schema_builder.build();
+
+    let index = match Index::open_in_dir(idx_dir) {
+        Ok(idx) => idx,
+        Err(_) => Index::create_in_dir(idx_dir, schema).map_err(|e| e.to_string())?,
+    };
+
+    // Volver a obtener los fields desde el schema real del índice
+    let s = index.schema();
+    let path_f = s
+        .get_field("path")
+        .map_err(|_| "field path not found".to_string())?;
+    let filename_f = s
+        .get_field("filename")
+        .map_err(|_| "field filename not found".to_string())?;
+    let ext_f = s
+        .get_field("extension")
+        .map_err(|_| "field extension not found".to_string())?;
+
+    Ok((index, path_f, filename_f, ext_f))
 }
