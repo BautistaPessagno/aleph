@@ -59,6 +59,7 @@ dependencies = [
  "llm",
  "notify",
  "opener",
+ "regex",
  "rust-fuzzy-search",
  "serde",
  "serde_json",

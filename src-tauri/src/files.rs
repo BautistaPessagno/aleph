@@ -9,12 +9,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tantivy::collector::TopDocs;
-use tantivy::query::QueryParser;
+use tantivy::query::{BooleanQuery, Occur, QueryParser, RegexQuery};
 use tantivy::schema::*;
 use tantivy::Term;
 use tantivy::TantivyError;
 use tantivy::{doc, Index, IndexWriter};
 use tokio;
+// regex is referenced directly as `regex::...`
 
 pub async fn create_index(path: &str) -> Result<(), String> {
     //El index se va a guardar en ~/.cache/aleph/index
@@ -132,10 +133,24 @@ pub async fn search_index(
         query_parser.set_field_fuzzy(filename, false, 1, true);
 
         let query_str = &query;
-        let query = query_parser.parse_query(query).map_err(|e| e.to_string())?;
+        let fuzzy_query = query_parser
+            .parse_query(query)
+            .map_err(|e| e.to_string())?;
+
+        // Substring case-insensitive using RegexQuery on path
+        let escaped = regex::escape(query);
+        let ci_regex = format!("(?i).*{}.*", escaped);
+        let substring_query = RegexQuery::from_pattern(&ci_regex, path_f)
+            .map_err(|e| e.to_string())?;
+
+        // Combine fuzzy filename match OR substring path match
+        let combined = BooleanQuery::new(vec![
+            (Occur::Should, Box::new(fuzzy_query)),
+            (Occur::Should, Box::new(substring_query)),
+        ]);
 
         let top_docs = searcher
-            .search(&query, &TopDocs::with_limit(limit))
+            .search(&combined, &TopDocs::with_limit(limit))
             .map_err(|e| e.to_string())?;
 
         let mut first_vec: Vec<(String, String, f32, Option<String>)> =
@@ -285,8 +300,16 @@ pub async fn search_index(
 fn calculate_contextual_score(name: &str, path: &str, base_score: f32, query: &str) -> f32 {
     let mut score = base_score;
 
-    // Boost para coincidencia exacta en el nombre
-    if name.to_lowercase().contains(&query.to_lowercase()) {
+    let q = query.to_lowercase();
+    let name_l = name.to_lowercase();
+    let path_l = path.to_lowercase();
+
+    // Prioridad: substring (regex-like) en el path por encima del fuzzy
+    if path_l.contains(&q) {
+        // Alto boost para coincidencia directa en el path completo
+        score *= 3.0;
+    } else if name_l.contains(&q) {
+        // Boost moderado si coincide en el nombre
         score *= 1.5;
     }
 
@@ -360,7 +383,7 @@ use futures::{
     SinkExt, StreamExt,
 };
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
-use notify::event::{EventKind, RemoveKind, CreateKind};
+use notify::event::{EventKind, CreateKind};
 
 // watcher para updates de cambios en los directorios
 fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Result<Event>>)> {
