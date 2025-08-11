@@ -291,14 +291,12 @@ function App() {
               onClick={() => setSearchMode('apps')}
             >
               🚀 Apps
-              {indexingStatus.apps === 'creating' && <span className="indexing-indicator">⚡</span>}
             </button>
             <button
               className={`mode-button ${searchMode === 'files' ? 'active' : ''}`}
               onClick={() => setSearchMode('files')}
             >
               📁 Files
-              {indexingStatus.files === 'creating' && <span className="indexing-indicator">⚡</span>}
             </button>
             <button
               className={`mode-button ${searchMode === 'llm' ? 'active' : ''}`}
@@ -326,11 +324,7 @@ function App() {
             />
           </div>
           
-          {isLoading && query && (
-            <div className="loading-indicator">
-              <div className="spinner small"></div>
-            </div>
-          )}
+
         </div>
 
         <div className="search-content">
@@ -356,18 +350,7 @@ function App() {
 
           {searchMode === 'llm' && (
             <div className="llm-container">
-              {isLoading && query && (
-                <div className="llm-loading">
-                  <div className="llm-loading-content">
-                    <div className="typing-indicator">
-                      <div className="typing-dot"></div>
-                      <div className="typing-dot"></div>
-                      <div className="typing-dot"></div>
-                    </div>
-                    <p className="llm-loading-text">AI is thinking...</p>
-                  </div>
-                </div>
-              )}
+
 
               {llmResponse && !isLoading && (
                 <div className="llm-response">
